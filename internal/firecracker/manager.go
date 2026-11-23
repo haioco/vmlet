@@ -104,7 +104,7 @@ type Manager struct {
 	sshKeyManager   *SSHKeyManager
 	configGenerator *ConfigGenerator
 	imageManager    *images.ImageManager
-	enhancedNetwork *network.NetworkManager
+	enhancedNetwork network.Backend
 	bootValidator   *validation.BootValidator
 	errorHandler    *ErrorHandler
 	systemValidator *SystemValidator
@@ -311,7 +311,10 @@ func NewManager(config *Config, reservationMgr *network.ReservationManager) (*Ma
 		DisableDHCP: config.DisableDHCP,
 		ManageNAT:   config.ManageNAT || bridgeName != "lxdbr0", // don't manage NAT on lxdbr0 by default
 	}
-	enhancedNetwork := network.NewNetworkManager(networkConfig)
+	enhancedNetwork, err := network.NewNetworkBackend(networkConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize network backend: %w", err)
+	}
 
 	// Create boot validator
 	bootValidator := validation.NewBootValidator()

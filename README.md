@@ -309,6 +309,7 @@ config file → defaults**.
 
 | Variable | Purpose |
 |----------|---------|
+| `MICROVM_NETWORK_BACKEND` | Network backend: `bridge` (default) or `ovn` (not yet implemented, roadmap 1.2); `noop` for tests/external networking |
 | `MICROVM_WORK_DIR` | State + runtime directory (default `./work`) |
 | `MICROVM_FIRECRACKER_BIN` | Path to the Firecracker binary |
 | `MICROVM_KERNEL_PATH` | Default kernel image |

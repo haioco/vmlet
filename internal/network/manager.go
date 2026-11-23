@@ -7,7 +7,8 @@ import (
 	"time"
 )
 
-// NetworkManager orchestrates all network infrastructure components
+// NetworkManager orchestrates all network infrastructure components. It is the
+// default "bridge" implementation of Backend.
 type NetworkManager struct {
 	bridgeManager *BridgeManager
 	dhcpManager   *DHCPManager
@@ -16,20 +17,25 @@ type NetworkManager struct {
 	mu            sync.RWMutex
 }
 
+var _ Backend = (*NetworkManager)(nil)
+
 // NetworkConfig represents the overall network configuration
 type NetworkConfig struct {
-	BridgeName     string
-	BridgeIP       string
-	BridgeCIDR     string
-	HostInterface  string
-	DHCPRange      DHCPRange
-	DNSServers     []string
-	SSHPortRange   PortRange
-	ConfigDir      string
+	// Backend selects the network backend. Empty means MICROVM_NETWORK_BACKEND,
+	// falling back to "bridge" when the variable is unset.
+	Backend       string
+	BridgeName    string
+	BridgeIP      string
+	BridgeCIDR    string
+	HostInterface string
+	DHCPRange     DHCPRange
+	DNSServers    []string
+	SSHPortRange  PortRange
+	ConfigDir     string
 	// When true, do not start an internal DHCP server (use existing one like lxdbr0)
-	DisableDHCP    bool
+	DisableDHCP bool
 	// When false, NAT iptables rules won't be managed (use existing host NAT)
-	ManageNAT      bool
+	ManageNAT bool
 }
 
 // VMNetworkInfo represents network information for a VM
@@ -55,12 +61,12 @@ func NewNetworkManager(config *NetworkConfig) *NetworkManager {
 
 	// Create DHCP manager
 	dhcpManager := NewDHCPManager(DHCPConfig{
-		ConfigDir:   config.ConfigDir,
-		BridgeName:  config.BridgeName,
-		IPRange:     config.DHCPRange,
-		Gateway:     config.BridgeIP,
-		DNSServers:  config.DNSServers,
-		LeaseTime:   "12h",
+		ConfigDir:  config.ConfigDir,
+		BridgeName: config.BridgeName,
+		IPRange:    config.DHCPRange,
+		Gateway:    config.BridgeIP,
+		DNSServers: config.DNSServers,
+		LeaseTime:  "12h",
 	})
 
 	// Create SSH manager
@@ -260,9 +266,14 @@ func (nm *NetworkManager) GetNetworkStatus() (*NetworkStatus, error) {
 	}
 
 	return &NetworkStatus{
-		Bridge:      bridgeInfo,
-		DHCPRunning: func() bool { if nm.config.DisableDHCP { return false } ; return nm.dhcpManager.IsRunning() }(),
-		DHCPLeases:  leases,
+		Bridge: bridgeInfo,
+		DHCPRunning: func() bool {
+			if nm.config.DisableDHCP {
+				return false
+			}
+			return nm.dhcpManager.IsRunning()
+		}(),
+		DHCPLeases: leases,
 	}, nil
 }
 

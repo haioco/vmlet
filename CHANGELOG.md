@@ -7,6 +7,9 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
 ## [Unreleased]
 
 ### Added
+- Pluggable network backend interface (`network.Backend`) with a registry and
+  selection via `MICROVM_NETWORK_BACKEND` (default `bridge`); `noop` backend for
+  tests/external networking, `ovn` reserved for roadmap item 1.2.
 - Roadmap: OVN primary networking → multi-node cluster → DRS-style auto live
   migration (`ROADMAP.md`, GitHub issues #1–#30).
 - Versioning policy (`docs/VERSIONING.md`); build-time version stamping via
