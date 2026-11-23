@@ -408,7 +408,7 @@ vmlet is heading toward a full self-hosted microVM cloud:
 3. **Auto live migration / DRS** (`v0.4.0`) — VMware-DRS-style continuous load balancing
 4. **v1.0.0 GA** — all three pillars stable, public API frozen
 
-Details: [ROADMAP.md](ROADMAP.md) · tracking: [GitHub project board](https://github.com/orgs/haioco/projects) ·
+Details: [ROADMAP.md](ROADMAP.md) · tracking: [GitHub project board](https://github.com/orgs/haioco/projects/1) ·
 versioning policy: [docs/VERSIONING.md](docs/VERSIONING.md)
 
 ---
