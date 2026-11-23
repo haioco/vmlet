@@ -39,10 +39,13 @@ import (
 	"github.com/haioco/vmlet/internal/storage"
 )
 
-const (
-	ServiceVersion = "2.0.0"
-	ServiceName    = "Vmlet MicroVM Service"
-)
+// ServiceVersion is the release version (SemVer, see docs/VERSIONING.md).
+// It is a var so releases can stamp it at build time:
+//
+//	go build -ldflags "-X main.ServiceVersion=0.2.0" ./cmd/http-server
+var ServiceVersion = "0.1.0"
+
+const ServiceName = "Vmlet MicroVM Service"
 
 // calculateVMIP calculates a consistent IP address for a VM based on its ID
 func calculateVMIP(vmID string) string {

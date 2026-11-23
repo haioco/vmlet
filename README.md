@@ -399,6 +399,20 @@ go run ./demo/storage-demo
 
 ---
 
+## 🗺 Roadmap
+
+vmlet is heading toward a full self-hosted microVM cloud:
+
+1. **OVN primary networking** (`v0.2.0`) — logical overlay, native DHCP/DNS, ACL security groups
+2. **Multi-node cluster** (`v0.3.0`) — shared state, scheduler, one API, drain/maintenance
+3. **Auto live migration / DRS** (`v0.4.0`) — VMware-DRS-style continuous load balancing
+4. **v1.0.0 GA** — all three pillars stable, public API frozen
+
+Details: [ROADMAP.md](ROADMAP.md) · tracking: [GitHub project board](https://github.com/orgs/haioco/projects) ·
+versioning policy: [docs/VERSIONING.md](docs/VERSIONING.md)
+
+---
+
 ## 📚 Documentation
 
 Engineering and operations guides live in [`docs/`](docs/):
@@ -406,6 +420,7 @@ Engineering and operations guides live in [`docs/`](docs/):
 | Guide | Topic |
 |-------|-------|
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Internal design & engineering deep-dive |
+| [VERSIONING.md](docs/VERSIONING.md) | SemVer policy, releases & branching model |
 | [API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md) | Full REST reference |
 | [DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) · [PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) | Deploy & harden |
 | [NETWORKING_CONFIGURATION_GUIDE.md](docs/NETWORKING_CONFIGURATION_GUIDE.md) | Bridges, DHCP, MACVLAN, IPv6 |

@@ -19,102 +19,7 @@ This guide covers the complete deployment process for the MicroVM Service, from 
 - **Kernel**: Linux kernel 4.14+ with KVM support
 - **LXD**: Version 4.0+ already installed and configured
 - **Docker**: Version 20.10+ (for containerized deployment)
-- **Go**: Version 1.19+ (for source builds)
-- **MySQL**: Version 8.0+ (required for Managed SQL service)
-
-### MySQL Database Setup (Required for Managed SQL)
-
-The Managed SQL service requires a MySQL database for storing instance metadata and firewall rules.
-
-```bash
-# Install MySQL Server
-sudo apt update
-sudo apt install -y mysql-server
-
-# Secure the installation
-sudo mysql_secure_installation
-
-# Create the microvm database and tables
-sudo mysql -e "CREATE DATABASE IF NOT EXISTS microvm;"
-
-# Create required tables
-sudo mysql microvm -e "
-CREATE TABLE IF NOT EXISTS managed_sql (
-    id VARCHAR(36) PRIMARY KEY,
-    user_id VARCHAR(255) NOT NULL,
-    name VARCHAR(255) NOT NULL,
-    region_id VARCHAR(50) NOT NULL,
-    vm_id VARCHAR(50),
-    public_ip VARCHAR(50),
-    role VARCHAR(20) DEFAULT 'standalone',
-    dr_primary_id VARCHAR(36),
-    dr_replica_id VARCHAR(36),
-    plan VARCHAR(50) NOT NULL,
-    vcpus INT NOT NULL,
-    memory_mb INT NOT NULL,
-    disk_gb INT NOT NULL,
-    price_per_hour DECIMAL(10,2),
-    currency VARCHAR(10) DEFAULT 'IRR',
-    sql_version VARCHAR(20),
-    edition VARCHAR(50),
-    sa_password_encrypted TEXT,
-    status VARCHAR(50) DEFAULT 'pending',
-    health VARCHAR(50) DEFAULT 'unknown',
-    dns_name VARCHAR(255),
-    external_id VARCHAR(255),
-    dr_pair_id VARCHAR(36),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP NULL,
-    INDEX idx_user_id (user_id),
-    INDEX idx_status (status),
-    INDEX idx_region (region_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS sql_firewall_rules (
-    id VARCHAR(36) PRIMARY KEY,
-    instance_id VARCHAR(36) NOT NULL,
-    ip_address VARCHAR(50) NOT NULL,
-    port INT DEFAULT 1433,
-    description VARCHAR(255),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_instance_id (instance_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-"
-
-# Create MySQL user for vmlet service (optional, can use root)
-sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY 'your-secure-password';"
-sudo mysql -e "FLUSH PRIVILEGES;"
-```
-
-#### Configure vmlet Service Environment
-
-Add the MySQL password to the vmlet systemd service:
-
-```bash
-# Create systemd override directory
-sudo mkdir -p /etc/systemd/system/vmlet.service.d/
-
-# Add MySQL password environment variable
-sudo tee /etc/systemd/system/vmlet.service.d/override.conf << EOF
-[Service]
-Environment=MYSQL_PASSWORD=your-secure-password
-EOF
-
-# Reload systemd and restart service
-sudo systemctl daemon-reload
-sudo systemctl restart vmlet
-```
-
-#### Verify MySQL Connection
-
-Check the service logs to confirm MySQL connection:
-
-```bash
-journalctl -u vmlet --since "1 minute ago" | grep -i mysql
-# Expected output: ✅ MySQL connected: root@localhost:3306/microvm
-```
+- **Go**: Version 1.22+ (for source builds)
 
 ### Network Prerequisites
 
@@ -504,32 +409,22 @@ backend microvm_backend
     server node3 10.0.1.12:8080 check
 ```
 
-#### Database Configuration (PostgreSQL)
-```sql
--- Create database and user
-CREATE DATABASE microvm_service;
-CREATE USER microvm_service WITH PASSWORD 'secure_password';
-GRANT ALL PRIVILEGES ON DATABASE microvm_service TO microvm_service;
+#### State Database (SQLite)
 
--- Create tables
-\c microvm_service;
+vmlet keeps VM state in an embedded SQLite database — no external database
+server is required. The file lives at `<work-dir>/vms-state.db` (work dir
+resolution: `MICROVM_WORK_DIR`, else `./firecracker-work`, else `./work`).
 
-CREATE TABLE microvms (
-    id UUID PRIMARY KEY,
-    customer_id VARCHAR(255) NOT NULL,
-    node_id VARCHAR(255) NOT NULL,
-    status VARCHAR(50) NOT NULL,
-    resources JSONB NOT NULL,
-    network JSONB NOT NULL,
-    storage JSONB NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
-);
+```bash
+# Inspect state (read-only)
+sqlite3 /opt/vmlet/work/vms-state.db ".tables"
 
-CREATE INDEX idx_microvms_customer ON microvms(customer_id);
-CREATE INDEX idx_microvms_node ON microvms(node_id);
-CREATE INDEX idx_microvms_status ON microvms(status);
+# Back up the state database safely while the service runs
+sqlite3 /opt/vmlet/work/vms-state.db ".backup '/var/backups/vmlet/vms-state.db'"
 ```
+
+> Multi-node clustering with a replicated state store is on the
+> [roadmap](../ROADMAP.md) (Phase 2).
 
 ### Security Configuration
 
@@ -626,8 +521,8 @@ cp -r /etc/microvm-service "$BACKUP_DIR/$DATE/"
 # Backup data
 tar -czf "$BACKUP_DIR/$DATE/data.tar.gz" /var/lib/microvm-service
 
-# Backup database
-pg_dump microvm_service > "$BACKUP_DIR/$DATE/database.sql"
+# Backup state database (SQLite)
+sqlite3 /var/lib/microvm-service/work/vms-state.db ".backup '$BACKUP_DIR/$DATE/vms-state.db'"
 
 # Cleanup old backups (keep 30 days)
 find "$BACKUP_DIR" -type d -mtime +30 -exec rm -rf {} \;
@@ -655,8 +550,8 @@ sudo cp -r "$BACKUP_DIR/microvm-service" /etc/
 # Restore data
 sudo tar -xzf "$BACKUP_DIR/data.tar.gz" -C /
 
-# Restore database
-psql microvm_service < "$BACKUP_DIR/database.sql"
+# Restore state database (SQLite)
+sudo cp "$BACKUP_DIR/vms-state.db" /var/lib/microvm-service/work/vms-state.db
 
 # Start service
 sudo systemctl start microvm-service
