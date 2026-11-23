@@ -1,0 +1,22 @@
+{
+  "server": {
+    "host": "localhost",
+    "port": 8080,
+    "grpc_port": 9090,
+    "tls_enabled": false,
+    "log_level": "info",
+    "metrics_port": 8081
+  },
+  "firecracker": {
+    "binary_path": "/usr/local/bin/firecracker",
+    "kernel_image_path": "/var/lib/firecracker-containerd/runtime/default-vmlinux.bin",
+    "enable_jailer": false,
+    "default_kernel_args": "console=ttyS0 reboot=k panic=1 pci=off"
+  },
+  "networking": {
+    "default_mode": "nat"
+  },
+  "storage": {
+    "default_type": "local"
+  }
+}

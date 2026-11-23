@@ -1,0 +1,240 @@
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Remove policy-rc.d to allow services to start in microVM
+RUN rm -f /usr/sbin/policy-rc.d
+
+# Update and install base packages for microVM
+RUN apt-get update && apt-get install -y \
+    systemd \
+    systemd-sysv \
+    cloud-init \
+    openssh-server \
+    netplan.io \
+    iproute2 \
+    iputils-ping \
+    ca-certificates \
+    sudo \
+    nano \
+    curl \
+    wget \
+    vim \
+    net-tools \
+    kmod \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Load virtio modules for Firecracker microVM (critical for performance)
+# Note: Modules are loaded from Firecracker's custom vmlinux kernel, not from rootfs packages
+RUN mkdir -p /etc/modules-load.d && \
+    printf 'virtio_balloon\nvirtio_blk\nvirtio_net\nvirtio_mmio\nvirtio_pci\nvirtio_ring\nvirtio\n' > /etc/modules-load.d/virtio.conf
+
+# Configure I/O scheduler for virtio-blk (optimal for microVMs)
+RUN mkdir -p /etc/udev/rules.d && \
+    echo 'ACTION=="add|change", KERNEL=="vd[a-z]", ATTR{queue/scheduler}="none"' > /etc/udev/rules.d/60-virtio-blk-scheduler.rules
+
+# Configure cloud-init for NoCloud datasource (no package updates)
+RUN echo 'datasource_list: [ NoCloud, None ]' > /etc/cloud/cloud.cfg.d/90_dpkg.cfg
+
+# Create cloud-init config that skips package updates using printf (heredocs don't work well in Dockerfiles)
+RUN printf '%s\n' \
+'cloud_init_modules:' \
+' - migrator' \
+' - seed_random' \
+' - bootcmd' \
+' - write-files' \
+' - growpart' \
+' - resizefs' \
+' - disk_setup' \
+' - mounts' \
+' - set_hostname' \
+' - update_hostname' \
+' - update_etc_hosts' \
+' - ca-certs' \
+' - rsyslog' \
+' - users-groups' \
+' - ssh' \
+'' \
+'# Ensure hostname resolution and rootfs resize' \
+'manage_etc_hosts: true' \
+'resize_rootfs: true' \
+'growpart:' \
+'  mode: auto' \
+'' \
+'cloud_config_modules:' \
+' - ssh-import-id' \
+' - locale' \
+' - set-passwords' \
+' - ntp' \
+' - timezone' \
+' - runcmd' \
+'' \
+'cloud_final_modules:' \
+' - scripts-vendor' \
+' - scripts-per-once' \
+' - scripts-per-boot' \
+' - scripts-per-instance' \
+' - scripts-user' \
+' - ssh-authkey-fingerprints' \
+' - keys-to-console' \
+' - final-message' \
+' - power-state-change' \
+'' \
+'system_info:' \
+'   default_user:' \
+'     name: ubuntu' \
+'     gecos: Ubuntu' \
+'     shell: /bin/bash' \
+'     sudo: ALL=(ALL) NOPASSWD:ALL' \
+'     lock_passwd: true' \
+'' \
+'datasource_list: [ NoCloud, None ]' \
+'datasource:' \
+'    NoCloud:' \
+'        fs_label: cidata' \
+> /etc/cloud/cloud.cfg
+
+# Pre-generate SSH host keys
+RUN ssh-keygen -A
+
+# Enable services for VM boot (not container runtime)
+# We cannot use systemctl in Docker build, so we create symlinks manually
+RUN mkdir -p /etc/systemd/system/multi-user.target.wants \
+    /etc/systemd/system/sysinit.target.wants \
+    /etc/systemd/system/sockets.target.wants \
+    /etc/systemd/system/network-online.target.wants
+
+# Enable cloud-init services
+RUN ln -sf /lib/systemd/system/cloud-init-local.service /etc/systemd/system/cloud-init.target.wants/ && \
+    ln -sf /lib/systemd/system/cloud-init.service /etc/systemd/system/cloud-init.target.wants/ && \
+    ln -sf /lib/systemd/system/cloud-config.service /etc/systemd/system/cloud-init.target.wants/ && \
+    ln -sf /lib/systemd/system/cloud-final.service /etc/systemd/system/cloud-init.target.wants/ && \
+    ln -sf /lib/systemd/system/cloud-init.target /etc/systemd/system/multi-user.target.wants/
+
+# Enable SSH
+RUN ln -sf /lib/systemd/system/ssh.service /etc/systemd/system/multi-user.target.wants/
+
+# Enable networking
+RUN ln -sf /lib/systemd/system/systemd-networkd.service /etc/systemd/system/dbus-org.freedesktop.network1.service && \
+    ln -sf /lib/systemd/system/systemd-networkd.service /etc/systemd/system/multi-user.target.wants/ && \
+    ln -sf /lib/systemd/system/systemd-networkd.socket /etc/systemd/system/sockets.target.wants/
+
+# Disable systemd-resolved (causes long boot waits). Do NOT modify /etc/resolv.conf in Docker build
+# because Docker mounts it; resolv.conf will be injected during seeding.
+RUN ln -sf /dev/null /etc/systemd/system/systemd-resolved.service
+
+# Disable wait-online (causes boot hangs) by removing ALL symlinks and masking the service
+RUN rm -f /etc/systemd/system/network-online.target.wants/systemd-networkd-wait-online.service \
+    /lib/systemd/system/network-online.target.wants/systemd-networkd-wait-online.service \
+    /lib/systemd/system/systemd-networkd-wait-online.service.d/*.conf && \
+    ln -sf /dev/null /etc/systemd/system/systemd-networkd-wait-online.service
+
+# Configure SSH
+RUN sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
+    && sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
+    && echo 'UseDNS no' >> /etc/ssh/sshd_config
+
+# Brand: Vmlet ASCII art banner (SSH only)
+RUN printf '\n ██╗  ██╗ █████╗ ██╗ ██████╗ \n ██║  ██║██╔══██╗██║██╔═══██╗\n ███████║███████║██║██║   ██║\n ██╔══██║██╔══██║██║██║   ██║\n ██║  ██║██║  ██║██║╚██████╔╝\n ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝ ╚═════╝ \n\n' > /etc/issue.net && \
+    sed -i '/^#*Banner/d' /etc/ssh/sshd_config && \
+    echo 'Banner /etc/issue.net' >> /etc/ssh/sshd_config && \
+    rm -f /etc/motd && rm -rf /etc/update-motd.d/* || true
+
+# Speed up cloud-init boot by removing network-online wait dependency (no bootcmd)
+RUN mkdir -p /etc/systemd/system/cloud-init.service.d && \
+    printf "[Unit]\n# Remove network-online.target wait\nAfter=network.target\nWants=\nBefore=\n" > /etc/systemd/system/cloud-init.service.d/override.conf && \
+    mkdir -p /etc/cloud/cloud.cfg.d && \
+    printf "# Fast boot tweaks (no network wait)\nreporting:\n  enabled: false\n" > /etc/cloud/cloud.cfg.d/99-fast-boot.cfg
+
+# Remove default netplan (cloud-init will manage)
+RUN rm -f /etc/netplan/*.yaml
+
+# Ensure netplan applies configs to systemd-networkd at boot
+RUN mkdir -p /etc/systemd/system/systemd-networkd.service.d && \
+    printf "[Service]\nExecStartPre=/usr/sbin/netplan generate\n" > /etc/systemd/system/systemd-networkd.service.d/netplan-generate.conf
+
+# Remove bloat: unattended-upgrades, polkit, packagekit and disable unnecessary services
+RUN apt-get purge -y \
+        unattended-upgrades \
+        ubuntu-release-upgrader-core \
+        update-notifier-common \
+        policykit-1 \
+        polkitd \
+        packagekit \
+        packagekit-tools \
+        || true && \
+    apt-get autoremove -y && \
+    rm -f /etc/apt/apt.conf.d/20auto-upgrades /etc/apt/apt.conf.d/10periodic /etc/apt/apt.conf.d/50unattended-upgrades || true && \
+    bash -lc 'echo -e "APT::Periodic::Update-Package-Lists \"0\";\nAPT::Periodic::Unattended-Upgrade \"0\";" > /etc/apt/apt.conf.d/99disable-auto-upgrades' && \
+    ln -sf /dev/null /etc/systemd/system/apt-daily.timer && \
+    ln -sf /dev/null /etc/systemd/system/apt-daily-upgrade.timer && \
+    ln -sf /dev/null /etc/systemd/system/apt-daily.service && \
+    ln -sf /dev/null /etc/systemd/system/apt-daily-upgrade.service && \
+    ln -sf /dev/null /etc/systemd/system/unattended-upgrades.service && \
+    ln -sf /dev/null /etc/systemd/system/packagekit.service && \
+    ln -sf /dev/null /etc/systemd/system/polkit.service && \
+    ln -sf /dev/null /etc/systemd/system/systemd-timesyncd.service
+
+# Set up fstab
+RUN echo '/dev/vda / ext4 defaults,discard 0 1' > /etc/fstab
+# Remove /dev/vdb from fstab (will be attached as cloud-init ISO, avoid boot delay)
+#RUN echo '/dev/vdb /mnt auto defaults,nofail 0 2' >> /etc/fstab
+
+# Kernel hardening: Anti-DDoS and anti-spoofing protection (IPv4 + IPv6)
+RUN printf '%s\n' \
+'# Firecracker MicroVM Optimizations' \
+'vm.swappiness=1' \
+'vm.dirty_ratio=10' \
+'vm.dirty_background_ratio=5' \
+'kernel.printk=3 4 1 3' \
+'' \
+'# DDoS Protection - Prevent VM from responding to attack traffic' \
+'net.ipv4.conf.all.arp_ignore=1' \
+'net.ipv4.conf.default.arp_ignore=1' \
+'net.ipv4.conf.all.arp_announce=2' \
+'net.ipv4.conf.default.arp_announce=2' \
+'net.ipv4.tcp_syncookies=1' \
+'net.ipv4.tcp_syn_retries=2' \
+'net.ipv4.tcp_synack_retries=2' \
+'net.ipv4.conf.all.accept_redirects=0' \
+'net.ipv4.conf.default.accept_redirects=0' \
+'net.ipv6.conf.all.accept_redirects=0' \
+'net.ipv6.conf.default.accept_redirects=0' \
+'net.ipv4.icmp_echo_ignore_broadcasts=1' \
+'net.ipv4.icmp_ratelimit=100' \
+'net.ipv4.conf.all.log_martians=0' \
+'net.ipv4.tcp_max_syn_backlog=1024' \
+'net.ipv4.tcp_fin_timeout=15' \
+'' \
+'# Anti-Spoofing - Prevent IP spoofing attacks (IPv4 + IPv6)' \
+'net.ipv4.conf.all.rp_filter=1' \
+'net.ipv4.conf.default.rp_filter=1' \
+'net.ipv4.conf.all.accept_source_route=0' \
+'net.ipv4.conf.default.accept_source_route=0' \
+'net.ipv6.conf.all.accept_source_route=0' \
+'net.ipv6.conf.default.accept_source_route=0' \
+'net.ipv4.conf.all.send_redirects=0' \
+'net.ipv4.conf.default.send_redirects=0' \
+'net.ipv4.conf.all.secure_redirects=0' \
+'net.ipv4.conf.default.secure_redirects=0' \
+'net.ipv6.conf.all.accept_ra=0' \
+'net.ipv6.conf.default.accept_ra=0' \
+'' \
+'# Disable IPv6 privacy extensions (use static addresses for VMs)' \
+'net.ipv6.conf.all.use_tempaddr=0' \
+'net.ipv6.conf.default.use_tempaddr=0' \
+> /etc/sysctl.d/99-vmlet-security.conf
+
+# SystemD optimization for microVM (low memory, fast boot)
+RUN mkdir -p /etc/systemd/system.conf.d && \
+    printf '[Manager]\nDefaultTimeoutStartSec=30s\nDefaultTimeoutStopSec=15s\nDefaultMemoryAccounting=yes\nDefaultCPUAccounting=yes\nDefaultIOAccounting=yes\n' > /etc/systemd/system.conf.d/microvm.conf
+
+# Disable container-specific kernel modules (not needed in VM)
+RUN mkdir -p /etc/modprobe.d && \
+    printf 'blacklist overlay\nblacklist aufs\n' > /etc/modprobe.d/blacklist-container.conf
+
+# Clean up
+RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* \
+    && find /var/log -type f -exec truncate -s 0 {} \;
+
+CMD ["/sbin/init"]

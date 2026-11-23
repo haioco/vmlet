@@ -1,0 +1,67 @@
+{
+  "server": {
+    "host": "localhost",
+    "port": 8080,
+    "grpc_port": 9090,
+    "tls_enabled": false,
+    "log_level": "debug",
+    "metrics_port": 8081
+  },
+  "firecracker": {
+    "binary_path": "/usr/local/bin/firecracker",
+    "kernel_image_path": "/var/lib/firecracker-containerd/runtime/default-vmlinux.bin",
+    "root_drive_path": "/var/lib/firecracker-containerd/runtime/default-rootfs.img",
+    "containerd_socket": "/run/firecracker-containerd/containerd.sock",
+    "enable_jailer": false,
+    "default_kernel_args": "console=ttyS0 noapic reboot=k panic=1 pci=off nomodules rw"
+  },
+  "networking": {
+    "default_mode": "static",
+    "bridge_name": "fc-br0",
+    "bridge_ip": "192.168.100.1/24",
+    "static_ip_range": "192.168.100.10-192.168.100.200",
+    "gateway": "192.168.100.1",
+    "dns_servers": ["8.8.8.8", "8.8.4.4"],
+    "dhcp_config": {
+      "enabled": false,
+      "bridge_name": "fc-br0",
+      "dhcp_server_ip": "192.168.100.1",
+      "dhcp_range": "192.168.100.10-192.168.100.100",
+      "dns_servers": ["8.8.8.8", "8.8.4.4"],
+      "mac_prefix": "AA:FC:00"
+    },
+    "nat_config": {
+      "enabled": true,
+      "bridge_name": "fc-br0",
+      "subnet": "192.168.100.0/24",
+      "gateway": "192.168.100.1",
+      "dns_servers": ["8.8.8.8", "8.8.4.4"],
+      "dhcp_enabled": false,
+      "port_forward_base": 2200,
+      "mac_prefix": "AA:FC:02"
+    }
+  },
+  "storage": {
+    "default_type": "local",
+    "local_config": {
+      "base_path": "/var/lib/firecracker-containerd/storage",
+      "max_size_gb": 100,
+      "file_system": "ext4"
+    }
+  },
+  "resources": {
+    "buffer_percentage": 0.20,
+    "max_vcpus_per_microvm": 4,
+    "max_memory_mb_per_microvm": 2048,
+    "max_storage_mb_per_microvm": 10240,
+    "monitoring_interval_sec": 30,
+    "overload_threshold": 0.80
+  },
+  "development": {
+    "simulate_lxd": true,
+    "mock_resource_usage": true,
+    "enable_debug_logging": true,
+    "disable_auth": true,
+    "test_data_path": "./testdata"
+  }
+}

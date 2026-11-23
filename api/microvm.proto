@@ -1,0 +1,264 @@
+syntax = "proto3";
+
+package microvm.v1;
+
+option go_package = "github.com/haioco/vmlet/pkg/api/v1";
+
+import "google/protobuf/timestamp.proto";
+
+// MicroVM Service provides lifecycle management for firecracker microVMs
+service MicroVMService {
+  // Provision a new microVM with specified resources
+  rpc ProvisionMicroVM(ProvisionMicroVMRequest) returns (ProvisionMicroVMResponse);
+  
+  // Get status and details of a specific microVM
+  rpc GetMicroVMStatus(GetMicroVMStatusRequest) returns (GetMicroVMStatusResponse);
+  
+  // List all microVMs with optional filtering
+  rpc ListMicroVMs(ListMicroVMsRequest) returns (ListMicroVMsResponse);
+  
+  // Stop a running microVM
+  rpc StopMicroVM(StopMicroVMRequest) returns (StopMicroVMResponse);
+  
+  // Start a stopped microVM
+  rpc StartMicroVM(StartMicroVMRequest) returns (StartMicroVMResponse);
+  
+  // Delete a microVM and clean up resources
+  rpc DeleteMicroVM(DeleteMicroVMRequest) returns (DeleteMicroVMResponse);
+  
+  // Get current pricing information
+  rpc GetCurrentPricing(GetCurrentPricingRequest) returns (GetCurrentPricingResponse);
+  
+  // Get resource availability across nodes
+  rpc GetResourceAvailability(GetResourceAvailabilityRequest) returns (GetResourceAvailabilityResponse);
+}
+
+// Resource specifications for microVM provisioning
+message ResourceSpecs {
+  uint32 vcpus = 1;
+  uint32 memory_mb = 2;
+  uint32 storage_mb = 3;
+}
+
+// Storage configuration options
+message StorageConfig {
+  StorageType type = 1;
+  S3Config s3_config = 2;
+  
+  enum StorageType {
+    STORAGE_TYPE_UNSPECIFIED = 0;
+    STORAGE_TYPE_LOCAL = 1;
+    STORAGE_TYPE_S3_FUSE = 2;
+    STORAGE_TYPE_S3_NBD = 3;
+    STORAGE_TYPE_HYBRID = 4;
+  }
+}
+
+// S3 storage configuration
+message S3Config {
+  string bucket = 1;
+  string region = 2;
+  string access_key = 3;
+  string secret_key = 4;
+}
+
+// Network configuration options
+message NetworkConfig {
+  NetworkMode mode = 1;
+  string custom_ip = 2; // Optional: for static IP assignment
+  
+  enum NetworkMode {
+    NETWORK_MODE_UNSPECIFIED = 0;
+    NETWORK_MODE_DHCP = 1;
+    NETWORK_MODE_MACVLAN = 2;
+    NETWORK_MODE_NAT = 3;
+    NETWORK_MODE_OVN = 4;
+  }
+}
+
+// MicroVM instance representation
+message MicroVMInstance {
+  string id = 1;
+  string node_id = 2;
+  MicroVMStatus status = 3;
+  ResourceSpecs resources = 4;
+  StorageConfig storage = 5;
+  NetworkInfo network = 6;
+  PricingInfo pricing = 7;
+  MicroVMMetadata metadata = 8;
+  
+  enum MicroVMStatus {
+    MICROVM_STATUS_UNSPECIFIED = 0;
+    MICROVM_STATUS_CREATING = 1;
+    MICROVM_STATUS_RUNNING = 2;
+    MICROVM_STATUS_STOPPING = 3;
+    MICROVM_STATUS_STOPPED = 4;
+    MICROVM_STATUS_ERROR = 5;
+  }
+}
+
+// Network information for a microVM
+message NetworkInfo {
+  string ip_address = 1;
+  string mac_address = 2;
+  NetworkConfig.NetworkMode assignment_method = 3;
+  uint32 ssh_port = 4;
+  string public_key = 5;
+}
+
+// Pricing information for a microVM
+message PricingInfo {
+  double hourly_rate = 1;
+  string currency = 2;
+}
+
+// Metadata for a microVM
+message MicroVMMetadata {
+  google.protobuf.Timestamp created_at = 1;
+  google.protobuf.Timestamp last_activity = 2;
+  string customer_id = 3;
+}
+
+// Resource pool information
+message ResourcePool {
+  string node_id = 1;
+  ResourceCapacity capacity = 2;
+  ResourceUsage usage = 3;
+  ResourceAvailability availability = 4;
+  google.protobuf.Timestamp last_updated = 5;
+}
+
+// Resource capacity information
+message ResourceCapacity {
+  uint32 total_cpu = 1;
+  uint32 total_memory_mb = 2;
+  uint32 total_storage_mb = 3;
+}
+
+// Resource usage information
+message ResourceUsage {
+  uint32 lxd_cpu = 1;
+  uint32 lxd_memory_mb = 2;
+  uint32 lxd_storage_mb = 3;
+  uint32 firecracker_cpu = 4;
+  uint32 firecracker_memory_mb = 5;
+  uint32 firecracker_storage_mb = 6;
+}
+
+// Resource availability information
+message ResourceAvailability {
+  uint32 available_cpu = 1;
+  uint32 available_memory_mb = 2;
+  uint32 available_storage_mb = 3;
+}
+
+// Current pricing information
+message CurrentPricing {
+  BaseRates base_rates = 1;
+  PricingMultipliers current_multipliers = 2;
+  AvailabilityTier availability_tier = 3;
+  google.protobuf.Timestamp next_update_at = 4;
+  
+  enum AvailabilityTier {
+    AVAILABILITY_TIER_UNSPECIFIED = 0;
+    AVAILABILITY_TIER_HIGH = 1;
+    AVAILABILITY_TIER_MEDIUM = 2;
+    AVAILABILITY_TIER_LOW = 3;
+  }
+}
+
+// Base pricing rates
+message BaseRates {
+  double cpu_per_hour = 1;
+  double memory_mb_per_hour = 2;
+  double storage_mb_per_hour = 3;
+}
+
+// Pricing multipliers
+message PricingMultipliers {
+  double cpu_multiplier = 1;
+  double memory_multiplier = 2;
+  double storage_multiplier = 3;
+}
+
+// Request/Response messages
+
+message ProvisionMicroVMRequest {
+  ResourceSpecs resources = 1;
+  StorageConfig storage = 2;
+  NetworkConfig network = 3;
+  string customer_id = 4;
+  string preferred_node_id = 5; // Optional: for node affinity
+}
+
+message ProvisionMicroVMResponse {
+  MicroVMInstance microvm = 1;
+  string error_message = 2;
+}
+
+message GetMicroVMStatusRequest {
+  string microvm_id = 1;
+}
+
+message GetMicroVMStatusResponse {
+  MicroVMInstance microvm = 1;
+  string error_message = 2;
+}
+
+message ListMicroVMsRequest {
+  string customer_id = 1; // Optional: filter by customer
+  string node_id = 2; // Optional: filter by node
+  MicroVMInstance.MicroVMStatus status = 3; // Optional: filter by status
+}
+
+message ListMicroVMsResponse {
+  repeated MicroVMInstance microvms = 1;
+  string error_message = 2;
+}
+
+message StopMicroVMRequest {
+  string microvm_id = 1;
+  bool force = 2; // Optional: force stop without graceful shutdown
+}
+
+message StopMicroVMResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+message StartMicroVMRequest {
+  string microvm_id = 1;
+}
+
+message StartMicroVMResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+message DeleteMicroVMRequest {
+  string microvm_id = 1;
+  bool force = 2; // Optional: force delete without graceful shutdown
+}
+
+message DeleteMicroVMResponse {
+  bool success = 1;
+  string error_message = 2;
+}
+
+message GetCurrentPricingRequest {
+  string node_id = 1; // Optional: get pricing for specific node
+}
+
+message GetCurrentPricingResponse {
+  CurrentPricing pricing = 1;
+  string error_message = 2;
+}
+
+message GetResourceAvailabilityRequest {
+  string node_id = 1; // Optional: get availability for specific node
+}
+
+message GetResourceAvailabilityResponse {
+  repeated ResourcePool resource_pools = 1;
+  string error_message = 2;
+}

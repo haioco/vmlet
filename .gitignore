@@ -1,0 +1,31 @@
+# Build artifacts
+/cmd/http-server/http-server
+/cmd/hybrid-server/hybrid-server
+/vmlet
+/vmlet-http
+/http-server
+/hybrid-server
+/storage-demo
+/dist/
+*.exe
+*.test
+*.out
+
+# Runtime state
+/work/
+/firecracker-work/
+*.db
+*.db-journal
+*.log
+*.sock
+
+# Local configuration / secrets
+.env
+.env.*
+configs/*.local.json
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp

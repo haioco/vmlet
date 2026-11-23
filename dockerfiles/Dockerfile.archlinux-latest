@@ -1,0 +1,168 @@
+FROM archlinux:latest
+
+# Update and install base packages for microVM
+RUN pacman -Syu --noconfirm && pacman -S --noconfirm \
+    systemd \
+    cloud-init \
+    openssh \
+    networkmanager \
+    iproute2 \
+    iputils \
+    ca-certificates \
+    sudo \
+    nano \
+    curl \
+    wget \
+    vim \
+    net-tools \
+    kmod \
+    && pacman -Scc --noconfirm
+
+# Load virtio modules for Firecracker microVM (critical for performance)
+RUN mkdir -p /etc/modules-load.d && \
+    printf 'virtio_balloon\nvirtio_blk\nvirtio_net\nvirtio_mmio\nvirtio_pci\nvirtio_ring\nvirtio\n' > /etc/modules-load.d/virtio.conf
+
+# Configure I/O scheduler for virtio-blk (optimal for microVMs)
+RUN mkdir -p /etc/udev/rules.d && \
+    echo 'ACTION=="add|change", KERNEL=="vd[a-z]", ATTR{queue/scheduler}="none"' > /etc/udev/rules.d/60-virtio-blk-scheduler.rules
+
+# Configure cloud-init for NoCloud
+RUN echo 'datasource_list: [ NoCloud, None ]' > /etc/cloud/cloud.cfg.d/90_dpkg.cfg
+
+# Create minimal cloud-init config
+RUN printf '%s\n' \
+'cloud_init_modules:' \
+' - migrator' \
+' - seed_random' \
+' - bootcmd' \
+' - write-files' \
+' - growpart' \
+' - resizefs' \
+' - set_hostname' \
+' - update_hostname' \
+' - update_etc_hosts' \
+' - ca-certs' \
+' - rsyslog' \
+' - users-groups' \
+' - ssh' \
+'' \
+'manage_etc_hosts: true' \
+'resize_rootfs: true' \
+'growpart:' \
+'  mode: auto' \
+'' \
+'cloud_config_modules:' \
+' - locale' \
+' - set-passwords' \
+' - ntp' \
+' - timezone' \
+' - runcmd' \
+'' \
+'cloud_final_modules:' \
+' - scripts-vendor' \
+' - scripts-per-once' \
+' - scripts-per-boot' \
+' - scripts-per-instance' \
+' - scripts-user' \
+' - ssh-authkey-fingerprints' \
+' - keys-to-console' \
+' - final-message' \
+' - power-state-change' \
+'' \
+'system_info:' \
+'   default_user:' \
+'     name: arch' \
+'     gecos: Arch Linux' \
+'     shell: /bin/bash' \
+'     sudo: ALL=(ALL) NOPASSWD:ALL' \
+'     lock_passwd: true' \
+'' \
+'datasource_list: [ NoCloud, None ]' \
+> /etc/cloud/cloud.cfg
+
+# Pre-generate SSH host keys
+RUN ssh-keygen -A
+
+# Enable services (create symlinks instead of using systemctl inside Docker)
+RUN mkdir -p /etc/systemd/system/multi-user.target.wants \
+    /etc/systemd/system/cloud-init.target.wants && \
+    ln -sf /usr/lib/systemd/system/sshd.service /etc/systemd/system/multi-user.target.wants/ && \
+    ln -sf /usr/lib/systemd/system/NetworkManager.service /etc/systemd/system/multi-user.target.wants/ && \
+    ln -sf /usr/lib/systemd/system/cloud-init-local.service /etc/systemd/system/cloud-init.target.wants/ && \
+    ln -sf /usr/lib/systemd/system/cloud-init.service /etc/systemd/system/cloud-init.target.wants/ && \
+    ln -sf /usr/lib/systemd/system/cloud-config.service /etc/systemd/system/cloud-init.target.wants/ && \
+    ln -sf /usr/lib/systemd/system/cloud-final.service /etc/systemd/system/cloud-init.target.wants/ && \
+    ln -sf /usr/lib/systemd/system/cloud-init.target /etc/systemd/system/multi-user.target.wants/
+
+# Configure SSH (enable password & root auth)
+RUN sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#\?ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' /etc/ssh/sshd_config && \
+    echo 'UseDNS no' >> /etc/ssh/sshd_config
+
+# Brand: Vmlet ASCII art banner (SSH only)
+RUN printf '\n ██╗  ██╗ █████╗ ██╗ ██████╗ \n ██║  ██║██╔══██╗██║██╔═══██╗\n ███████║███████║██║██║   ██║\n ██╔══██║██╔══██║██║██║   ██║\n ██║  ██║██║  ██║██║╚██████╔╝\n ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝ ╚═════╝ \n\n' > /etc/issue.net && \
+    sed -i '/^#*Banner/d' /etc/ssh/sshd_config && \
+    echo 'Banner /etc/issue.net' >> /etc/ssh/sshd_config && \
+    rm -f /etc/motd || true
+
+# Set up fstab
+RUN echo '/dev/vda / ext4 defaults,discard 0 1' > /etc/fstab
+
+# Kernel hardening: Anti-DDoS and anti-spoofing protection (IPv4 + IPv6)
+RUN printf '%s\n' \
+'# Firecracker MicroVM Optimizations' \
+'vm.swappiness=1' \
+'vm.dirty_ratio=10' \
+'vm.dirty_background_ratio=5' \
+'kernel.printk=3 4 1 3' \
+'' \
+'# DDoS Protection - Prevent VM from responding to attack traffic' \
+'net.ipv4.conf.all.arp_ignore=1' \
+'net.ipv4.conf.default.arp_ignore=1' \
+'net.ipv4.conf.all.arp_announce=2' \
+'net.ipv4.conf.default.arp_announce=2' \
+'net.ipv4.tcp_syncookies=1' \
+'net.ipv4.tcp_syn_retries=2' \
+'net.ipv4.tcp_synack_retries=2' \
+'net.ipv4.conf.all.accept_redirects=0' \
+'net.ipv4.conf.default.accept_redirects=0' \
+'net.ipv6.conf.all.accept_redirects=0' \
+'net.ipv6.conf.default.accept_redirects=0' \
+'net.ipv4.icmp_echo_ignore_broadcasts=1' \
+'net.ipv4.icmp_ratelimit=100' \
+'net.ipv4.conf.all.log_martians=0' \
+'net.ipv4.tcp_max_syn_backlog=1024' \
+'net.ipv4.tcp_fin_timeout=15' \
+'' \
+'# Anti-Spoofing - Prevent IP spoofing attacks (IPv4 + IPv6)' \
+'net.ipv4.conf.all.rp_filter=1' \
+'net.ipv4.conf.default.rp_filter=1' \
+'net.ipv4.conf.all.accept_source_route=0' \
+'net.ipv4.conf.default.accept_source_route=0' \
+'net.ipv6.conf.all.accept_source_route=0' \
+'net.ipv6.conf.default.accept_source_route=0' \
+'net.ipv4.conf.all.send_redirects=0' \
+'net.ipv4.conf.default.send_redirects=0' \
+'net.ipv4.conf.all.secure_redirects=0' \
+'net.ipv4.conf.default.secure_redirects=0' \
+'net.ipv6.conf.all.accept_ra=0' \
+'net.ipv6.conf.default.accept_ra=0' \
+'' \
+'# Disable IPv6 privacy extensions (use static addresses for VMs)' \
+'net.ipv6.conf.all.use_tempaddr=0' \
+'net.ipv6.conf.default.use_tempaddr=0' \
+> /etc/sysctl.d/99-vmlet-security.conf
+
+# SystemD optimization for microVM (low memory, fast boot)
+RUN mkdir -p /etc/systemd/system.conf.d && \
+    printf '[Manager]\nDefaultTimeoutStartSec=30s\nDefaultTimeoutStopSec=15s\nDefaultMemoryAccounting=yes\nDefaultCPUAccounting=yes\nDefaultIOAccounting=yes\n' > /etc/systemd/system.conf.d/microvm.conf
+
+# Disable container-specific kernel modules (not needed in VM)
+RUN mkdir -p /etc/modprobe.d && \
+    printf 'blacklist overlay\nblacklist aufs\n' > /etc/modprobe.d/blacklist-container.conf
+
+# Clean up
+RUN pacman -Scc --noconfirm && rm -rf /var/cache/pacman/pkg/* /tmp/* /var/tmp/*
+
+CMD ["/sbin/init"]
