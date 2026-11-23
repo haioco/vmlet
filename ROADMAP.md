@@ -22,7 +22,7 @@ full policy (SemVer, trunk-based development, tags — not long-lived version
 branches).
 
 > **Tracking:** every item below is a GitHub issue on the
-> [vmlet Roadmap project board](https://github.com/orgs/haioco/projects/1) —
+> [vmlet Roadmap project board](https://github.com/haioco/vmlet/projects) —
 > see the project for live status, assignees and discussion.
 
 ---
