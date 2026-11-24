@@ -1,0 +1,18 @@
+[Unit]
+Description=Open vSwitch Database Server
+Documentation=man:ovsdb-server(8)
+After=network.target
+Before=ovn-northd.service
+
+[Service]
+Type=notify
+Environment=OVS_RUNDIR=/var/run/openvswitch OVS_DBDIR=/var/lib/openvswitch
+EnvironmentFile=-/etc/default/ovs-vswitchd
+ExecStartPre=/bin/mkdir -p ${OVS_RUNDIR}
+ExecStart=/usr/share/openvswitch/scripts/ovs-ctl --no-monitor --system-id=random start
+ExecStop=/usr/share/openvswitch/scripts/ovs-ctl --no-monitor stop
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

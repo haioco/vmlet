@@ -1,0 +1,18 @@
+[Unit]
+Description=OVN Northd Daemon
+Documentation=man:ovn-northd(8)
+After=ovsdb-server.service
+Before=ovn-controller.service
+
+[Service]
+Type=notify
+Environment=OVN_RUNDIR=/var/run/openvswitch OVS_DBDIR=/var/lib/openvswitch
+EnvironmentFile=-/etc/default/ovn-central
+ExecStartPre=/bin/mkdir -p /var/run/ovn
+ExecStart=/usr/share/ovn/scripts/ovn-ctl start_northd
+ExecStop=/usr/share/ovn/scripts/ovn-ctl stop_northd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

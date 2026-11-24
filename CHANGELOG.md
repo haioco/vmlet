@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
 ## [Unreleased]
 
 ### Added
+- OVS datapath package (`internal/ovs`): idempotent br-int bridge management,
+  TAP attachment with `external_ids:iface-id` for ovn-controller binding, and a
+  `VerifyPort` assertion; `scripts/setup-ovn-host.sh` + `systemd/ovn/*.service`
+  provision a fresh OVN host in one command.
 - OVN Northbound integration package (`internal/ovn`): libovsdb client to the
   `OVN_Northbound` DB plus an idempotent, single-transaction reconcile loop over
   logical switches, switch ports and routers, and an `ovn-nbctl` fallback.

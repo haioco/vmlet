@@ -350,6 +350,7 @@ vmlet/
 │   ├── lifecycle/        # VM state machine & orchestration
 │   ├── network/          # bridges, DHCP, reservations, SSH forwarding, pluggable backends
 │   ├── ovn/              # OVN Northbound integration (logical topology reconcile)
+│   ├── ovs/              # Open vSwitch datapath wiring (br-int, TAP ports, iface-id)
 │   ├── storage/          # local / ZFS / SQLite backends
 │   ├── images/           # rootfs catalog & preparation
 │   ├── balloon/          # memory reclaim / give-back

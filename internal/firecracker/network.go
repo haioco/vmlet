@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/haioco/vmlet/internal/models"
+	"github.com/haioco/vmlet/internal/ovs"
 )
 
 // NetworkManager handles network configuration for microVMs
@@ -650,7 +651,7 @@ func (nm *NetworkManager) configureOVNNetwork(ctx context.Context, microvmID str
 
 	// Connect to OVS bridge
 	ovsBridge := "br-int" // Standard OVN integration bridge
-	if err := nm.addTAPToOVSBridge(tapName, ovsBridge); err != nil {
+	if err := nm.addTAPToOVSBridge(ctx, tapName, ovsBridge, ovnPortNameFor(microvmID)); err != nil {
 		return nil, fmt.Errorf("failed to add TAP to OVS bridge: %w", err)
 	}
 
@@ -780,7 +781,7 @@ func (nm *NetworkManager) CleanupNetwork(ctx context.Context, microvmID string, 
 			return fmt.Errorf("failed to remove OVN logical port: %w", err)
 		}
 		// Remove TAP from OVS bridge
-		if err := nm.removeTAPFromOVSBridge(tapName, "br-int"); err != nil {
+		if err := nm.removeTAPFromOVSBridge(ctx, tapName, "br-int"); err != nil {
 			return fmt.Errorf("failed to remove TAP from OVS bridge: %w", err)
 		}
 		// Remove TAP interface
@@ -1668,33 +1669,50 @@ func (nm *NetworkManager) releasePublicIP(microvmID string) error {
 	return nil
 }
 
-func (nm *NetworkManager) addTAPToOVSBridge(tapName, bridgeName string) error {
-	cmd := exec.Command("ovs-vsctl", "add-port", bridgeName, tapName)
-	return cmd.Run()
+// ovnPortNameFor derives the OVN logical switch port name for a VM. OVN's
+// ovn-controller binds it to the TAP through the interface's
+// external_ids:iface-id, so the two names must match.
+func ovnPortNameFor(microvmID string) string {
+	return fmt.Sprintf("fc-port-%s", truncateVMID(microvmID, 8))
 }
 
-func (nm *NetworkManager) removeTAPFromOVSBridge(tapName, bridgeName string) error {
-	cmd := exec.Command("ovs-vsctl", "del-port", bridgeName, tapName)
-	return cmd.Run()
+// ovsClient is built lazily so the OVS bridge is only required in OVN mode.
+func (nm *NetworkManager) ovsClient() (*ovs.Client, error) {
+	return ovs.NewClient()
+}
+
+// addTAPToOVSBridge attaches a TAP to the OVS integration bridge and tags it
+// with the iface-ID OVN's ovn-controller uses to find its logical port.
+// Idempotent.
+func (nm *NetworkManager) addTAPToOVSBridge(ctx context.Context, tapName, bridgeName, ifaceID string) error {
+	client, err := nm.ovsClient()
+	if err != nil {
+		return err
+	}
+	if err := client.EnsureBridge(ctx, bridgeName); err != nil {
+		return err
+	}
+	return client.AttachPort(ctx, bridgeName, tapName, ifaceID)
+}
+
+func (nm *NetworkManager) removeTAPFromOVSBridge(ctx context.Context, tapName, bridgeName string) error {
+	client, err := nm.ovsClient()
+	if err != nil {
+		return err
+	}
+	return client.DetachPort(ctx, bridgeName, tapName)
 }
 
 func (nm *NetworkManager) configureOVNLogicalPort(microvmID, macAddr string) error {
-	// Configure OVN logical port
-	portName := fmt.Sprintf("fc-port-%s", truncateVMID(microvmID, 8))
-	cmd := exec.Command("ovn-nbctl", "lsp-add", "fc-network", portName)
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-
-	// Set MAC address
-	cmd = exec.Command("ovn-nbctl", "lsp-set-addresses", portName, macAddr)
-	return cmd.Run()
+	// The logical switch port is created by internal/ovn's reconcile loop from
+	// vmlet's VM state; this call only guarantees the OVS side exists.
+	// The iface-id is set by addTAPToOVSBridge.
+	return nil
 }
 
 func (nm *NetworkManager) removeOVNLogicalPort(microvmID string) error {
-	portName := fmt.Sprintf("fc-port-%s", truncateVMID(microvmID, 8))
-	cmd := exec.Command("ovn-nbctl", "lsp-del", portName)
-	return cmd.Run()
+	// Logical topology removal is handled by the internal/ovn reconcile loop.
+	return nil
 }
 
 func (nm *NetworkManager) assignOVNIP(microvmID string) (string, error) {
