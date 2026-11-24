@@ -348,7 +348,8 @@ vmlet/
 │   ├── api/              # gRPC service definitions & handlers
 │   ├── firecracker/      # VMM driver: boot, config, devices, SSH
 │   ├── lifecycle/        # VM state machine & orchestration
-│   ├── network/          # bridges, DHCP, reservations, SSH forwarding
+│   ├── network/          # bridges, DHCP, reservations, SSH forwarding, pluggable backends
+│   ├── ovn/              # OVN Northbound integration (logical topology reconcile)
 │   ├── storage/          # local / ZFS / SQLite backends
 │   ├── images/           # rootfs catalog & preparation
 │   ├── balloon/          # memory reclaim / give-back

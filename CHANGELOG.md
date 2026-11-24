@@ -7,6 +7,9 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
 ## [Unreleased]
 
 ### Added
+- OVN Northbound integration package (`internal/ovn`): libovsdb client to the
+  `OVN_Northbound` DB plus an idempotent, single-transaction reconcile loop over
+  logical switches, switch ports and routers, and an `ovn-nbctl` fallback.
 - Pluggable network backend interface (`network.Backend`) with a registry and
   selection via `MICROVM_NETWORK_BACKEND` (default `bridge`); `noop` backend for
   tests/external networking, `ovn` reserved for roadmap item 1.2.
