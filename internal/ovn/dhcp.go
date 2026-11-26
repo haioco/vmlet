@@ -12,10 +12,12 @@ type DHCPOptions struct {
 	ExternalIDs map[string]string `ovsdb:"external_ids"`
 }
 
-// DNS is a row of the DNS table, holding one A/AAAA record pair.
+// DNS is a row of the DNS table. The real schema models records as a
+// string-to-string map ("hostname" -> "ip" or the reverse depending on OVN
+// version); vmlet stores "ip" -> "hostname" so lookups by IP are direct.
 type DNS struct {
 	UUID        string            `ovsdb:"_uuid"`
-	Records     []string          `ovsdb:"records"`
+	Records     map[string]string `ovsdb:"records"`
 	ExternalIDs map[string]string `ovsdb:"external_ids"`
 }
 
@@ -23,8 +25,8 @@ type DNS struct {
 // DB schema validates and so item 1.6 (security groups) has somewhere to land.
 type ACL struct {
 	UUID        string            `ovsdb:"_uuid"`
-	Action      *string           `ovsdb:"action"`
-	Direction   *string           `ovsdb:"direction"`
+	Action      string            `ovsdb:"action"`
+	Direction   string            `ovsdb:"direction"`
 	Match       string            `ovsdb:"match"`
 	Priority    int               `ovsdb:"priority"`
 	Log         bool              `ovsdb:"log"`

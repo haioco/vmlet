@@ -26,8 +26,7 @@ func (p LogicalPortSpec) toModel() *LogicalSwitchPort {
 		ExternalIDs:  p.ExternalIDs,
 	}
 	if p.Type != "" {
-		t := p.Type
-		m.Type = &t
+		m.Type = p.Type
 	}
 	return m
 }
@@ -36,7 +35,7 @@ func (p LogicalPortSpec) equalModel(existing *LogicalSwitchPort) bool {
 	if existing.Name != p.Name {
 		return false
 	}
-	if strPtrValue(existing.Type) != p.Type {
+	if existing.Type != p.Type {
 		return false
 	}
 	if !strSlicesEqual(existing.Addresses, p.Addresses) {
@@ -60,10 +59,12 @@ type LogicalSwitchSpec struct {
 	ExternalIDs map[string]string
 }
 
-// LogicalRouterSpec describes the desired state of a logical router.
+// LogicalRouterSpec describes the desired state of a logical router. The real
+// schema has no other_config on Logical_Router, so free-form settings are
+// expressed through options.
 type LogicalRouterSpec struct {
 	Name        string
-	OtherConfig map[string]string
+	Options     map[string]string
 	ExternalIDs map[string]string
 }
 
@@ -249,7 +250,7 @@ func (c *Client) ReconcileTopology(ctx context.Context, desired Topology) (*Reco
 			createOps, err := c.api.Create(&LogicalRouter{
 				Name:        want.Name,
 				Ports:       []string{},
-				OtherConfig: want.OtherConfig,
+				Options:     want.Options,
 				ExternalIDs: want.ExternalIDs,
 			})
 			if err != nil {
@@ -259,15 +260,15 @@ func (c *Client) ReconcileTopology(ctx context.Context, desired Topology) (*Reco
 			result.Created++
 			continue
 		}
-		if !mapsEqual(exists.OtherConfig, want.OtherConfig) || !mapsEqual(exists.ExternalIDs, want.ExternalIDs) {
+		if !mapsEqual(exists.Options, want.Options) || !mapsEqual(exists.ExternalIDs, want.ExternalIDs) {
 			// The update row and the field pointers must be the same model.
 			routerTarget := &LogicalRouter{
 				UUID:        exists.UUID,
-				OtherConfig: want.OtherConfig,
+				Options:     want.Options,
 				ExternalIDs: want.ExternalIDs,
 			}
 			updateOps, err := c.api.Where(exists).Update(routerTarget,
-				&routerTarget.OtherConfig, &routerTarget.ExternalIDs)
+				&routerTarget.Options, &routerTarget.ExternalIDs)
 			if err != nil {
 				return nil, fmt.Errorf("ovn: cannot build update op for logical router %q: %w", want.Name, err)
 			}

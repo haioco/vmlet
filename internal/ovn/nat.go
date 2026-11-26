@@ -16,8 +16,8 @@ type NAT struct {
 	ExternalIDs map[string]string `ovsdb:"external_ids"`
 	ExternalIP  string            `ovsdb:"external_ip"`
 	LogicalIP   string            `ovsdb:"logical_ip"`
-	LogicalPort string            `ovsdb:"logical_port"`
-	MAC         *string           `ovsdb:"mac"`
+	LogicalPort *string           `ovsdb:"logical_port"`
+	ExternalMAC *string           `ovsdb:"external_mac"`
 	Type        string            `ovsdb:"type"`
 }
 
@@ -61,7 +61,7 @@ func (f FloatingIP) toNAT(vmID string) *NAT {
 	}
 	if f.MAC != "" {
 		mac := f.MAC
-		n.MAC = &mac
+		n.ExternalMAC = &mac
 	}
 	return n
 }
@@ -140,12 +140,12 @@ func (c *Client) ReconcileNAT(ctx context.Context, floating []FloatingIP, snats 
 
 		// Drift: only the port binding can change for an existing key.
 		existing := currentByKey[key]
-		if existing.MAC != nil && *existing.MAC == f.MAC {
+		if existing.ExternalMAC != nil && *existing.ExternalMAC == f.MAC {
 			continue
 		}
 		updated := f.toNAT(vmIDFor(f))
 		updated.UUID = existing.UUID
-		updateOps, err := c.api.Where(existing).Update(updated, &updated.MAC)
+		updateOps, err := c.api.Where(existing).Update(updated, &updated.ExternalMAC)
 		if err != nil {
 			return nil, fmt.Errorf("ovn: cannot build update op for NAT %s: %w", f.ExternalIP, err)
 		}
@@ -248,7 +248,7 @@ func indexNATs(rows []NAT) map[string]*NAT {
 	out := make(map[string]*NAT, len(rows))
 	for i := range rows {
 		row := rows[i]
-		out[natKey(row.Type, row.ExternalIP, row.LogicalIP, row.LogicalPort)] = &row
+		out[natKey(row.Type, row.ExternalIP, row.LogicalIP, strPtrValue(row.LogicalPort))] = &row
 	}
 	return out
 }

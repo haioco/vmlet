@@ -232,11 +232,11 @@ func (c *Client) EnsureDNSRecord(ctx context.Context, ip, hostname string) error
 	if err != nil {
 		return err
 	}
-	want := []string{ip, hostname}
+	want := map[string]string{hostname: ip}
 
 	if len(current) > 0 {
 		existing := current[0]
-		if strSlicesEqual(existing.Records, want) {
+		if mapsEqual(existing.Records, want) {
 			return nil
 		}
 		row := &DNS{UUID: existing.UUID, Records: want}
@@ -369,8 +369,8 @@ func (c *Client) EnsureACL(ctx context.Context, switchName string, rule Security
 	if len(current) == 0 {
 		row := &ACL{
 			UUID:        namedRef("acl", fmt.Sprintf("%s-%d-%s", switchName, priority, direction)),
-			Action:      &action,
-			Direction:   &direction,
+			Action:      action,
+			Direction:   direction,
 			Priority:    priority,
 			Match:       match,
 			ExternalIDs: externalIDs,
@@ -395,9 +395,8 @@ func (c *Client) EnsureACL(ctx context.Context, switchName string, rule Security
 		Match:       existing.Match,
 		ExternalIDs: externalIDs,
 	}
-	if action2 := rule.Action(); row.Action == nil || *row.Action != action2 {
-		row.Action = &action
-	}
+	row.Action = action
+	row.Direction = direction
 	ops, err := c.api.Where(&existing).Update(row, &row.ExternalIDs)
 	if err != nil {
 		return fmt.Errorf("ovn: cannot build update op for ACL on %q: %w", switchName, err)
@@ -468,7 +467,7 @@ func (c *Client) aclBy(ctx context.Context, switchName string, priority int, dir
 	if err := c.api.WhereCache(func(r *ACL) bool {
 		return r.Priority == priority &&
 			r.Match == match &&
-			strPtrValue(r.Direction) == direction &&
+			r.Direction == direction &&
 			r.ExternalIDs["vmlet-switch"] == switchName
 	}).List(ctx, &rows); err != nil {
 		return nil, fmt.Errorf("ovn: lookup of ACL on %q: %w", switchName, err)
@@ -480,7 +479,7 @@ func keepACL(rules []SecurityRule, row ACL) bool {
 	for _, rule := range rules {
 		if rule.Priority() == row.Priority &&
 			rule.Match() == row.Match &&
-			strPtrValue(row.Direction) == rule.Direction {
+			row.Direction == rule.Direction {
 			return true
 		}
 	}
@@ -559,7 +558,11 @@ func (c *Client) EnsureLogicalSwitchPort(ctx context.Context, switchName string,
 	}
 
 	if len(ports) == 0 {
+		// The port must carry a named-UUID so the switch can reference it in
+		// the same transaction: Logical_Switch.ports is a strong reference, so
+		// the server rejects a mutation pointing at an empty (or unknown) UUID.
 		newPort := port.toModel()
+		newPort.UUID = namedRef("port", port.Name)
 		createOps, err := c.api.Create(newPort)
 		if err != nil {
 			return fmt.Errorf("ovn: cannot build create op for logical switch port %q: %w", port.Name, err)
@@ -698,4 +701,21 @@ func (c *Client) transact(ctx context.Context, ops []ovsdb.Operation, what strin
 		}
 	}
 	return nil
+}
+
+// TransactSelect runs a raw server-side select on a table and returns the rows.
+// It is the one read path that does not go through the client cache, which
+// makes it the right tool for verifying that a write actually persisted.
+func (c *Client) TransactSelect(ctx context.Context, table string) (ovsdb.OperationResult, error) {
+	res, err := c.api.Transact(ctx, ovsdb.Operation{Op: ovsdb.OperationSelect, Table: table})
+	if err != nil {
+		return ovsdb.OperationResult{}, err
+	}
+	if len(res) == 0 {
+		return ovsdb.OperationResult{}, fmt.Errorf("ovn: select on %s returned no results", table)
+	}
+	if res[0].Error != "" {
+		return ovsdb.OperationResult{}, fmt.Errorf("ovn: select on %s: %s", table, res[0].Error)
+	}
+	return res[0], nil
 }

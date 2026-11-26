@@ -38,8 +38,8 @@ func TestFloatingIPToNAT(t *testing.T) {
 	if n.ExternalIP != "54.38.119.252" || n.LogicalIP != "10.0.0.10" {
 		t.Errorf("addresses = %q -> %q", n.ExternalIP, n.LogicalIP)
 	}
-	if n.MAC == nil || *n.MAC != "02:fc:00:00:00:01" {
-		t.Errorf("mac = %v, want the VM MAC so OVN answers ARP", n.MAC)
+	if n.ExternalMAC == nil || *n.ExternalMAC != "02:fc:00:00:00:01" {
+		t.Errorf("external_mac = %v, want the VM MAC so OVN answers ARP", n.ExternalMAC)
 	}
 	if n.ExternalIDs["vmlet-vm"] != "vm-1" || n.ExternalIDs["vmlet-managed"] != "true" {
 		t.Errorf("external_ids = %v", n.ExternalIDs)
@@ -57,8 +57,8 @@ func TestSNATRuleToNAT(t *testing.T) {
 		t.Errorf("addresses = %q -> %q", n.LogicalIP, n.ExternalIP)
 	}
 	// SNAT is masquerade: no per-VM MAC needed.
-	if n.MAC != nil {
-		t.Errorf("mac = %v, want nil for snat", n.MAC)
+	if n.ExternalMAC != nil {
+		t.Errorf("external_mac = %v, want nil for snat", n.ExternalMAC)
 	}
 }
 

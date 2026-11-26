@@ -130,11 +130,8 @@ func init() {
 		return NewNoopBackend(), nil
 	})
 
-	// Reserved so selecting "ovn" fails with a clear roadmap message rather
-	// than "unknown backend". The real implementation lands in item 1.2.
-	mustRegisterBackend(BackendOVN, func(*NetworkConfig) (Backend, error) {
-		return nil, fmt.Errorf("network: %q backend is not implemented yet (roadmap item 1.2)", BackendOVN)
-	})
+	// The OVN backend is implemented in backend_ovn.go and registers itself
+	// there; it is deliberately not registered here so the two cannot drift.
 }
 
 func mustRegisterBackend(name string, factory BackendFactory) {

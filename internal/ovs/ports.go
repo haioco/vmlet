@@ -201,3 +201,32 @@ func splitLines(out string) []string {
 	}
 	return result
 }
+
+// BridgeInfo describes an OVS bridge.
+type BridgeInfo struct {
+	// Name is the bridge's name.
+	Name string
+	// Ports are the ports attached to the bridge.
+	Ports []string
+}
+
+// GetBridgeInfo reads a bridge and its ports. It is the OVS equivalent of the
+// bridge backend's bridge introspection, so the generic NetworkStatus can be
+// filled from either backend.
+func (c *Client) GetBridgeInfo(ctx context.Context, bridge string) (*BridgeInfo, error) {
+	if bridge == "" {
+		return nil, fmt.Errorf("ovs: bridge name must not be empty")
+	}
+	exists, err := c.BridgeExists(ctx, bridge)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("ovs: bridge %q does not exist", bridge)
+	}
+	ports, err := c.ListPorts(ctx, bridge)
+	if err != nil {
+		return nil, err
+	}
+	return &BridgeInfo{Name: bridge, Ports: ports}, nil
+}

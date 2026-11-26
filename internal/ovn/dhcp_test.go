@@ -199,8 +199,9 @@ func TestEnsureDNSRecord_IdempotentAndPruned(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("DNS rows = %d, want 1", len(rows))
 	}
-	if len(rows[0].Records) != 2 || rows[0].Records[0] != "10.0.0.10" || rows[0].Records[1] != "vm-1.alpha" {
-		t.Fatalf("records = %v, want [10.0.0.10 vm-1.alpha]", rows[0].Records)
+	// The real schema models records as hostname -> ip.
+	if len(rows[0].Records) != 1 || rows[0].Records["vm-1.alpha"] != "10.0.0.10" {
+		t.Fatalf("records = %v, want {vm-1.alpha: 10.0.0.10}", rows[0].Records)
 	}
 
 	// Renaming the host updates in place instead of adding a row.
@@ -214,7 +215,7 @@ func TestEnsureDNSRecord_IdempotentAndPruned(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("DNS rows after rename = %d, want 1", len(rows))
 	}
-	if rows[0].Records[1] != "renamed.alpha" {
+	if rows[0].Records["renamed.alpha"] != "10.0.0.10" {
 		t.Errorf("records = %v, want the renamed host", rows[0].Records)
 	}
 

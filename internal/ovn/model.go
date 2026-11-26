@@ -28,35 +28,36 @@ type LogicalSwitch struct {
 type LogicalSwitchPort struct {
 	UUID          string            `ovsdb:"_uuid"`
 	Name          string            `ovsdb:"name"`
-	Type          *string           `ovsdb:"type"`
+	Type          string            `ovsdb:"type"`
 	Addresses     []string          `ovsdb:"addresses"`
 	Options       map[string]string `ovsdb:"options"`
 	PortSecurity  []string          `ovsdb:"port_security"`
 	ParentName    *string           `ovsdb:"parent_name"`
 	Tag           *int              `ovsdb:"tag"`
 	DHCPv4Options *string           `ovsdb:"dhcpv4_options"`
-	OtherConfig   map[string]string `ovsdb:"other_config"`
 	ExternalIDs   map[string]string `ovsdb:"external_ids"`
 }
 
-// LogicalRouter is a row of the Logical_Router table.
+// LogicalRouter is a row of the Logical_Router table. Note the real schema has
+// no other_config on this table; free-form settings live in options.
 type LogicalRouter struct {
 	UUID        string            `ovsdb:"_uuid"`
 	Name        string            `ovsdb:"name"`
 	Ports       []string          `ovsdb:"ports"`
 	NAT         []string          `ovsdb:"nat"`
-	OtherConfig map[string]string `ovsdb:"other_config"`
+	Options     map[string]string `ovsdb:"options"`
 	ExternalIDs map[string]string `ovsdb:"external_ids"`
 }
 
-// LogicalRouterPort is a row of the Logical_Router_Port table.
+// LogicalRouterPort is a row of the Logical_Router_Port table. The real schema
+// has no other_config here either; free-form settings live in options.
 type LogicalRouterPort struct {
 	UUID        string            `ovsdb:"_uuid"`
 	Name        string            `ovsdb:"name"`
 	Networks    []string          `ovsdb:"networks"`
-	MAC         *string           `ovsdb:"mac"`
+	MAC         string            `ovsdb:"mac"`
 	Peer        *string           `ovsdb:"peer"`
-	OtherConfig map[string]string `ovsdb:"other_config"`
+	Options     map[string]string `ovsdb:"options"`
 	ExternalIDs map[string]string `ovsdb:"external_ids"`
 }
 

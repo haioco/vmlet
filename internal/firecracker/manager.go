@@ -349,8 +349,18 @@ func NewManager(config *Config, reservationMgr *network.ReservationManager) (*Ma
 		jailerBin:       config.JailerBin,
 	}
 
-	// Initialize enhanced network infrastructure (skip for now to avoid hanging)
-	fmt.Printf("⚠️  Skipping enhanced network initialization to avoid blocking\n")
+	// Bring the selected network backend up. For OVN this connects to the
+	// Northbound DB, ensures br-int exists and reconciles the logical topology
+	// for this host's network; for bridge it creates the bridge and (unless
+	// disabled) starts the DHCP server. Both are idempotent and fast.
+	if err := enhancedNetwork.Initialize(); err != nil {
+		return nil, fmt.Errorf("failed to initialize network backend: %w", err)
+	}
+
+	// Validate the datapath we are about to hand VMs to.
+	if err := enhancedNetwork.ValidateNetworkSetup(); err != nil {
+		return nil, fmt.Errorf("network backend validation failed: %w", err)
+	}
 
 	// Skip system validation for now to avoid hanging
 	fmt.Printf("⚠️  Skipping system validation to avoid blocking\n")

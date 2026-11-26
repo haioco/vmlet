@@ -51,10 +51,12 @@ type SecurityRule struct {
 	AllowRule bool
 }
 
-// SecurityRule names.
+// SecurityRule names. Directions must be OVN's own values: the ACL table's
+// direction column is an enum of "from-lport" / "to-lport", not
+// "ingress"/"egress".
 const (
-	DirectionIngress = "ingress"
-	DirectionEgress  = "egress"
+	DirectionIngress = "from-lport"
+	DirectionEgress  = "to-lport"
 
 	ProtocolTCP = "tcp"
 	ProtocolUDP = "udp"

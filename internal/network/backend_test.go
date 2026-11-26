@@ -112,11 +112,21 @@ func TestNewNetworkBackendSelection(t *testing.T) {
 		}
 	})
 
-	t.Run("ovn reports its roadmap status", func(t *testing.T) {
+	t.Run("ovn is a real backend", func(t *testing.T) {
+		// Selection must now succeed: item 1.1 reserved the name and the OVN
+		// backend implementation filled it in. Connecting to OVS/OVN still
+		// happens in Initialize(), not here, so construction cannot fail.
 		t.Setenv(BackendEnvVar, BackendOVN)
-		_, err := NewNetworkBackend(&NetworkConfig{})
-		if err == nil || !strings.Contains(err.Error(), "1.2") {
-			t.Fatalf("error = %v, want a clear 'not implemented yet' message", err)
+		backend, err := NewNetworkBackend(&NetworkConfig{BridgeCIDR: "10.0.0.0/24"})
+		if err != nil {
+			t.Fatalf("NewNetworkBackend() error: %v", err)
+		}
+		if _, ok := backend.(*OVNBackend); !ok {
+			t.Fatalf("backend = %T, want *OVNBackend", backend)
+		}
+		// ...and using it without Initialize must say so, not panic.
+		if err := backend.ValidateNetworkSetup(); err == nil {
+			t.Fatal("ValidateNetworkSetup should fail before Initialize")
 		}
 	})
 
