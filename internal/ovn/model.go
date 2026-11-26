@@ -18,22 +18,25 @@ type LogicalSwitch struct {
 	UUID        string            `ovsdb:"_uuid"`
 	Name        string            `ovsdb:"name"`
 	Ports       []string          `ovsdb:"ports"`
+	DNSRecords  []string          `ovsdb:"dns_records"`
+	ACLs        []string          `ovsdb:"acls"`
 	OtherConfig map[string]string `ovsdb:"other_config"`
 	ExternalIDs map[string]string `ovsdb:"external_ids"`
 }
 
 // LogicalSwitchPort is a row of the Logical_Switch_Port table.
 type LogicalSwitchPort struct {
-	UUID         string            `ovsdb:"_uuid"`
-	Name         string            `ovsdb:"name"`
-	Type         *string           `ovsdb:"type"`
-	Addresses    []string          `ovsdb:"addresses"`
-	Options      map[string]string `ovsdb:"options"`
-	PortSecurity []string          `ovsdb:"port_security"`
-	ParentName   *string           `ovsdb:"parent_name"`
-	Tag          *int              `ovsdb:"tag"`
-	OtherConfig  map[string]string `ovsdb:"other_config"`
-	ExternalIDs  map[string]string `ovsdb:"external_ids"`
+	UUID          string            `ovsdb:"_uuid"`
+	Name          string            `ovsdb:"name"`
+	Type          *string           `ovsdb:"type"`
+	Addresses     []string          `ovsdb:"addresses"`
+	Options       map[string]string `ovsdb:"options"`
+	PortSecurity  []string          `ovsdb:"port_security"`
+	ParentName    *string           `ovsdb:"parent_name"`
+	Tag           *int              `ovsdb:"tag"`
+	DHCPv4Options *string           `ovsdb:"dhcpv4_options"`
+	OtherConfig   map[string]string `ovsdb:"other_config"`
+	ExternalIDs   map[string]string `ovsdb:"external_ids"`
 }
 
 // LogicalRouter is a row of the Logical_Router table.
@@ -63,5 +66,8 @@ func NewClientDBModel() (model.ClientDBModel, error) {
 		"Logical_Switch_Port": &LogicalSwitchPort{},
 		"Logical_Router":      &LogicalRouter{},
 		"Logical_Router_Port": &LogicalRouterPort{},
+		"DHCP_Options":        &DHCPOptions{},
+		"DNS":                 &DNS{},
+		"ACL":                 &ACL{},
 	})
 }

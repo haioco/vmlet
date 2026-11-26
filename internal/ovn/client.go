@@ -126,6 +126,214 @@ func (c *Client) ListRouterPorts(ctx context.Context) ([]LogicalRouterPort, erro
 	return ports, nil
 }
 
+// ListDHCPOptions returns the DHCP_Options rows currently in the database.
+func (c *Client) ListDHCPOptions(ctx context.Context) ([]DHCPOptions, error) {
+	rows := []DHCPOptions{}
+	if err := c.api.List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("ovn: listing DHCP_Options: %w", err)
+	}
+	return rows, nil
+}
+
+// ListDNSRecords returns the DNS rows currently in the database.
+func (c *Client) ListDNSRecords(ctx context.Context) ([]DNS, error) {
+	rows := []DNS{}
+	if err := c.api.List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("ovn: listing DNS records: %w", err)
+	}
+	return rows, nil
+}
+
+// EnsureDHCPOptions creates or updates the DHCP_Options row for a subnet and
+// returns its UUID (or the named-UUID for a row created in the same
+// transaction). Idempotent.
+func (c *Client) EnsureDHCPOptions(ctx context.Context, spec DHCPSpec, network string) (string, error) {
+	options, err := dhcpOptions(spec)
+	if err != nil {
+		return "", err
+	}
+	externalIDs := dhcpExternalIDs(network)
+	cidr := spec.CIDR
+
+	current, err := c.dhcpByCIDR(ctx, cidr)
+	if err != nil {
+		return "", err
+	}
+
+	if len(current) == 0 {
+		named := namedRef("dhcp", cidr)
+		row := &DHCPOptions{
+			UUID:        named,
+			CIDR:        cidr,
+			Options:     options,
+			ExternalIDs: externalIDs,
+		}
+		ops, err := c.api.Create(row)
+		if err != nil {
+			return "", fmt.Errorf("ovn: cannot build create op for DHCP_Options %q: %w", cidr, err)
+		}
+		return named, c.transact(ctx, ops, fmt.Sprintf("create DHCP_Options %q", cidr))
+	}
+
+	existing := current[0]
+	if mapsEqual(existing.Options, options) && mapsEqual(existing.ExternalIDs, externalIDs) {
+		return existing.UUID, nil
+	}
+
+	row := &DHCPOptions{
+		UUID:        existing.UUID,
+		CIDR:        existing.CIDR,
+		Options:     options,
+		ExternalIDs: externalIDs,
+	}
+	ops, err := c.api.Where(existing).Update(row, &row.Options, &row.ExternalIDs)
+	if err != nil {
+		return "", fmt.Errorf("ovn: cannot build update op for DHCP_Options %q: %w", cidr, err)
+	}
+	return existing.UUID, c.transact(ctx, ops, fmt.Sprintf("update DHCP_Options %q", cidr))
+}
+
+// EnsureDHCPReservation makes a logical switch port use the given
+// DHCP_Options row and pins its static address, so a VM keeps its IP across
+// guest and host restarts. Idempotent.
+func (c *Client) EnsureDHCPReservation(ctx context.Context, portName, dhcpOptionsUUID string) error {
+	ports, err := c.switchPortByName(ctx, portName)
+	if err != nil {
+		return err
+	}
+	if len(ports) == 0 {
+		return fmt.Errorf("ovn: logical switch port %q does not exist", portName)
+	}
+
+	existing := ports[0]
+	if existing.DHCPv4Options != nil && *existing.DHCPv4Options == dhcpOptionsUUID {
+		return nil
+	}
+
+	row := &LogicalSwitchPort{
+		UUID:          existing.UUID,
+		DHCPv4Options: &dhcpOptionsUUID,
+	}
+	ops, err := c.api.Where(&existing).Update(row, &row.DHCPv4Options)
+	if err != nil {
+		return fmt.Errorf("ovn: cannot build update op for port %q dhcpv4_options: %w", portName, err)
+	}
+	return c.transact(ctx, ops, fmt.Sprintf("bind DHCP_Options to port %q", portName))
+}
+
+// EnsureDNSRecord creates the "ip hostname" DNS pair for a reservation.
+// Idempotent; records are keyed by external_ids so re-runs converge.
+func (c *Client) EnsureDNSRecord(ctx context.Context, ip, hostname string) error {
+	if hostname == "" || ip == "" {
+		return nil
+	}
+
+	current, err := c.dnsByIP(ctx, ip)
+	if err != nil {
+		return err
+	}
+	want := []string{ip, hostname}
+
+	if len(current) > 0 {
+		existing := current[0]
+		if strSlicesEqual(existing.Records, want) {
+			return nil
+		}
+		row := &DNS{UUID: existing.UUID, Records: want}
+		ops, err := c.api.Where(&existing).Update(row, &row.Records)
+		if err != nil {
+			return fmt.Errorf("ovn: cannot build update op for DNS %s: %w", ip, err)
+		}
+		return c.transact(ctx, ops, fmt.Sprintf("update DNS %s", ip))
+	}
+
+	row := &DNS{
+		UUID:    namedRef("dns", ip+"-"+hostname),
+		Records: want,
+		ExternalIDs: map[string]string{
+			"vmlet-managed":  "true",
+			dnsKeyExternalID: ip,
+		},
+	}
+	ops, err := c.api.Create(row)
+	if err != nil {
+		return fmt.Errorf("ovn: cannot build create op for DNS %s: %w", ip, err)
+	}
+	return c.transact(ctx, ops, fmt.Sprintf("create DNS %s", ip))
+}
+
+// DropDHCPReservation unlinks a port from its DHCP_Options row and removes its
+// DNS record. Idempotent; used when a VM is deleted.
+func (c *Client) DropDHCPReservation(ctx context.Context, portName string) error {
+	ports, err := c.switchPortByName(ctx, portName)
+	if err != nil {
+		return err
+	}
+	if len(ports) == 0 {
+		return nil
+	}
+
+	existing := ports[0]
+	if existing.DHCPv4Options == nil {
+		// Nothing bound: dropping is a no-op.
+		return nil
+	}
+
+	// To clear a weak reference the row must be updated with a nil value; an
+	// empty string is treated as "no change" by the OVSDB mapper.
+	row := &LogicalSwitchPort{UUID: existing.UUID}
+	ops, err := c.api.Where(&existing).Update(row, &row.DHCPv4Options)
+	if err != nil {
+		return fmt.Errorf("ovn: cannot build update op to clear port %q: %w", portName, err)
+	}
+	return c.transact(ctx, ops, fmt.Sprintf("drop DHCP reservation for port %q", portName))
+}
+
+// PruneDNSRecords deletes every DNS row whose reservation external id is no
+// longer desired. desired maps IP -> hostname.
+func (c *Client) PruneDNSRecords(ctx context.Context, desired map[string]string) error {
+	records, err := c.ListDNSRecords(ctx)
+	if err != nil {
+		return err
+	}
+
+	var ops []ovsdb.Operation
+	for i := range records {
+		row := records[i]
+		ip := row.ExternalIDs[dnsKeyExternalID]
+		if ip == "" || row.ExternalIDs["vmlet-managed"] != "true" {
+			continue
+		}
+		if _, keep := desired[ip]; keep {
+			continue
+		}
+		deleteOps, err := c.api.Where(&row).Delete()
+		if err != nil {
+			return fmt.Errorf("ovn: cannot build delete op for DNS %s: %w", ip, err)
+		}
+		ops = append(ops, deleteOps...)
+	}
+	return c.transact(ctx, ops, "prune DNS records")
+}
+
+func (c *Client) dhcpByCIDR(ctx context.Context, cidr string) ([]DHCPOptions, error) {
+	rows := []DHCPOptions{}
+	if err := c.api.WhereCache(func(r *DHCPOptions) bool { return r.CIDR == cidr }).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("ovn: lookup of DHCP_Options %q: %w", cidr, err)
+	}
+	return rows, nil
+}
+
+func (c *Client) dnsByIP(ctx context.Context, ip string) ([]DNS, error) {
+	rows := []DNS{}
+	if err := c.api.WhereCache(func(r *DNS) bool {
+		return r.ExternalIDs[dnsKeyExternalID] == ip
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("ovn: lookup of DNS records for %s: %w", ip, err)
+	}
+	return rows, nil
+}
+
 // EnsureLogicalSwitch creates or updates a logical switch. Idempotent.
 func (c *Client) EnsureLogicalSwitch(ctx context.Context, name string, otherConfig, externalIDs map[string]string) error {
 	switches, err := c.switchByName(ctx, name)

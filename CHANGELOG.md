@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
 ## [Unreleased]
 
 ### Added
+- OVN native DHCP and DNS (`internal/ovn`): `DHCP_Options` rows derived per
+  subnet (cidr, netmask, gateway, DNS servers, lease time), MAC-keyed static
+  reservations bound to logical switch ports via `dhcpv4_options`, and `DNS`
+  records (`ip hostname`) that are updated in place and pruned when a VM
+  disappears. Reservations are derived from desired state, so they survive a
+  controller restart; clearing a weak reference requires a nil update value.
 - Per-network logical topology (`internal/ovn`): `TopologyFromNetworks` /
   `TopologyFromVMState` derive one VM switch plus one gateway switch per network
   and a logical router per network, with deterministic OVN-safe names derived
