@@ -61,19 +61,19 @@ func TestOVNBackend_SubnetDerivation(t *testing.T) {
 		{
 			name:        "explicit cidr and ip",
 			config:      NetworkConfig{BridgeName: "br-int", BridgeCIDR: "10.1.0.0/24", BridgeIP: "10.1.0.254"},
-			wantSubnet:  "10.1.0.0/255.255.255.0",
+			wantSubnet:  "10.1.0.0/24",
 			wantGateway: "10.1.0.254",
 		},
 		{
 			name:        "gateway derived from the subnet",
 			config:      NetworkConfig{BridgeName: "br-int", BridgeCIDR: "10.2.0.0/24"},
-			wantSubnet:  "10.2.0.0/255.255.255.0",
+			wantSubnet:  "10.2.0.0/24",
 			wantGateway: "10.2.0.1",
 		},
 		{
 			name:        "no network config falls back to defaults",
 			config:      NetworkConfig{},
-			wantSubnet:  "10.0.0.0/255.255.255.0",
+			wantSubnet:  "10.0.0.0/24",
 			wantGateway: "10.0.0.1",
 		},
 	}

@@ -34,6 +34,15 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
   port security are created (instead of a placeholder address). Previously
   `mode: "ovn"` booted a VM with no logical port and no br-int attachment.
 
+- OVN port names and address allocation fixed after live testing:
+  `internal/firecracker`'s port name was truncated to the 8-char VM id while
+  `internal/ovn` used the full one, so the OVS `iface-id` disagreed with the
+  logical port and ovn-controller never bound them (only the TAP name needs to
+  fit the 15-char IFNAMSIZ limit, and that truncation happens separately).
+  `OVNBackend.subnet()` also produced a dotted netmask instead of CIDR, which
+  `net.ParseCIDR` rejects, and `AllocateSubnetIP` started at the gateway
+  address, handing the router's own IP to the first VM.
+
 ## [Unreleased]
 
 ### Added

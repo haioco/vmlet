@@ -58,11 +58,11 @@ func TestAllocateSubnetIP(t *testing.T) {
 		used []string
 		want string
 	}{
-		{"first free", "10.0.0.0/24", nil, "10.0.0.1"},
-		{"second free", "10.0.0.0/24", []string{"10.0.0.1"}, "10.0.0.2"},
-		{"skips a gap", "10.0.0.0/24", []string{"10.0.0.2"}, "10.0.0.1"},
-		{"fills the gap", "10.0.0.0/24", []string{"10.0.0.1", "10.0.0.3"}, "10.0.0.2"},
-		{"small subnet", "10.0.0.0/30", nil, "10.0.0.1"},
+		{"first free (after gateway)", "10.0.0.0/24", nil, "10.0.0.2"},
+		{"second free", "10.0.0.0/24", []string{"10.0.0.2"}, "10.0.0.3"},
+		{"skips a gap", "10.0.0.0/24", []string{"10.0.0.2"}, "10.0.0.3"},
+		{"fills the gap", "10.0.0.0/24", []string{"10.0.0.2", "10.0.0.4"}, "10.0.0.3"},
+		{"small subnet", "10.0.0.0/30", nil, "10.0.0.2"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

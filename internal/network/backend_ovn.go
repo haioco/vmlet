@@ -104,7 +104,11 @@ func (b *OVNBackend) subnet() (string, string, error) {
 	if gateway == "" {
 		gateway = ovn.FirstUsable(ipNet).String()
 	}
-	return ip.String() + "/" + ovn.NetmaskToDotted(ipNet), gateway, nil
+	// The subnet must be CIDR notation ("10.0.0.0/24"), not a dotted netmask
+	// ("10.0.0.0/255.255.255.0"): net.ParseCIDR rejects the latter, and every
+	// caller here hands this string to OVN and to ParseCIDR again.
+	ones, _ := ipNet.Mask.Size()
+	return fmt.Sprintf("%s/%d", ip.String(), ones), gateway, nil
 }
 
 // Initialize connects to the OVN Northbound DB and makes sure the datapath and

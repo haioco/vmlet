@@ -67,12 +67,16 @@ func AllocateSubnetIP(cidr string, used []string) (string, error) {
 		taken[ip] = true
 	}
 
-	// Start at the network address and advance to the first usable one,
-	// skipping the network and broadcast addresses.
+	// Start at the network address and advance past it and the gateway,
+	// which is the first usable address on the subnet and already spoken for
+	// by the logical router.
 	candidate := make(net.IP, len(ipNet.IP))
 	copy(candidate, ipNet.IP)
-	for isNetworkOrBroadcast(ipNet, candidate) {
+	for i := 0; i < 2; i++ {
 		incIP(candidate)
+		for isNetworkOrBroadcast(ipNet, candidate) {
+			incIP(candidate)
+		}
 	}
 
 	for ipNet.Contains(candidate) {

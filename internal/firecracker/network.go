@@ -1703,9 +1703,30 @@ const ovsIntegrationBridge = "br-int"
 // ovnPortNameFor derives the OVN logical switch port name for a VM. OVN's
 // ovn-controller binds it to the TAP through the interface's
 // external_ids:iface-id, so the two names must match.
+//
+// The name must be identical to the one internal/ovn writes into the
+// Northbound DB, which is why it is NOT truncated: the TAP name is what has to
+// fit in the 15-character IFNAMSIZ limit, and that truncation happens
+// separately. Truncating the port name too made the iface-id disagree with the
+// logical port, and ovn-controller silently never bound them.
 func ovnPortNameFor(microvmID string) string {
-	return fmt.Sprintf("fc-port-%s", truncateVMID(microvmID, 8))
+	sanitised := microvmID
+	var b strings.Builder
+	for _, r := range microvmID {
+		valid := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '-' || r == '_'
+		if valid {
+			b.WriteRune(r)
+		}
+	}
+	if s := strings.TrimSpace(b.String()); s != "" {
+		sanitised = s
+	}
+	return fmt.Sprintf("%s-%s", ovnPortPrefix, sanitised)
 }
+
+// ovnPortPrefix is the prefix shared with internal/ovn's LogicalPortName.
+const ovnPortPrefix = "fc-port"
 
 // ovsClient is built lazily so the OVS bridge is only required in OVN mode.
 func (nm *NetworkManager) ovsClient() (*ovs.Client, error) {
