@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
 ## [Unreleased]
 
 ### Added
+- Per-network logical topology (`internal/ovn`): `TopologyFromNetworks` /
+  `TopologyFromVMState` derive one VM switch plus one gateway switch per network
+  and a logical router per network, with deterministic OVN-safe names derived
+  from the network name. VM switches only carry VM ports; router ports live on
+  the gateway switch, so networks stay isolated and VMs cannot leak between them.
 - OVS datapath package (`internal/ovs`): idempotent br-int bridge management,
   TAP attachment with `external_ids:iface-id` for ovn-controller binding, and a
   `VerifyPort` assertion; `scripts/setup-ovn-host.sh` + `systemd/ovn/*.service`
