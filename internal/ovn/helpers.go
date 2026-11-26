@@ -1,15 +1,46 @@
 package ovn
 
 import (
-	"fmt"
 	"sort"
+	"strings"
 )
 
 // namedRef builds the named-UUID used to reference a row that is created
 // earlier in the same transaction. OVSDB resolves it against the real UUID
 // when the transaction commits.
+//
+// ovsdb-server restricts named-UUID strings to [a-zA-Z0-9_] and rejects
+// anything else (hyphens and dots included) with a type mismatch on the
+// "uuid-name" member. libovsdb's own in-process server accepts them, so this
+// only surfaces against a real database -- and it surfaces as an opaque
+// "syntax error", which is why the sanitising happens here in one place.
 func namedRef(kind, name string) string {
-	return fmt.Sprintf("@vmlet-%s-%s", kind, name)
+	return sanitizeUUIDName("vmlet_" + kind + "_" + name)
+}
+
+// sanitizeUUIDName maps every character outside [a-zA-Z0-9_] to "_" and
+// collapses runs, so a CIDR like "10.0.0.0/24" becomes a valid name.
+func sanitizeUUIDName(name string) string {
+	var b strings.Builder
+	prevUnderscore := false
+	for _, r := range name {
+		valid := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_'
+		if valid {
+			b.WriteRune(r)
+			prevUnderscore = false
+			continue
+		}
+		if !prevUnderscore {
+			b.WriteRune('_')
+			prevUnderscore = true
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" {
+		return "vmlet_ref"
+	}
+	return out
 }
 
 func strPtrValue(s *string) string {

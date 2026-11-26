@@ -14,6 +14,15 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
   troubleshooting section with `ovn-trace` / `ovs-ofctl` / `ovn-nbctl` and a
   symptom table.
 
+- OVN Northbound protocol fixes found by running against a real ovsdb-server:
+  named-UUIDs are sanitised to `[a-zA-Z0-9_]` because ovsdb-server rejects
+  hyphens and dots in `uuid-name` (libovsdb's own server accepts them, so this
+  was invisible until now); `EnsureDHCPOptions` returns the resolved UUID
+  rather than a named-UUID, since a named-UUID only resolves inside the
+  transaction that created it; and transaction errors now carry the server's
+  `details`, which is the only place a schema or protocol mismatch is
+  actually explained.
+
 ## [Unreleased]
 
 ### Added

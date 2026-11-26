@@ -172,7 +172,20 @@ func (c *Client) EnsureDHCPOptions(ctx context.Context, spec DHCPSpec, network s
 		if err != nil {
 			return "", fmt.Errorf("ovn: cannot build create op for DHCP_Options %q: %w", cidr, err)
 		}
-		return named, c.transact(ctx, ops, fmt.Sprintf("create DHCP_Options %q", cidr))
+		if err := c.transact(ctx, ops, fmt.Sprintf("create DHCP_Options %q", cidr)); err != nil {
+			return "", err
+		}
+		// A named-UUID only resolves inside the transaction that created it, so
+		// a caller that binds this row in a *later* transaction needs the real
+		// UUID. Read it back now that the row is committed and cached.
+		refreshed, err := c.dhcpByCIDR(ctx, cidr)
+		if err != nil {
+			return "", err
+		}
+		if len(refreshed) == 0 {
+			return "", fmt.Errorf("ovn: DHCP_Options %q vanished after creation", cidr)
+		}
+		return refreshed[0].UUID, nil
 	}
 
 	existing := current[0]
@@ -697,6 +710,13 @@ func (c *Client) transact(ctx context.Context, ops []ovsdb.Operation, what strin
 	}
 	for i, result := range results {
 		if result.Error != "" {
+			// Include the server's detail: it is the only place a schema or
+			// protocol mismatch is actually explained, and dropping it makes
+			// those failures look like opaque "syntax error"s.
+			if result.Details != "" {
+				return fmt.Errorf("ovn: transaction to %s failed at op %d: %s: %s",
+					what, i, result.Error, result.Details)
+			}
 			return fmt.Errorf("ovn: transaction to %s failed at op %d: %s", what, i, result.Error)
 		}
 	}
@@ -718,4 +738,10 @@ func (c *Client) TransactSelect(ctx context.Context, table string) (ovsdb.Operat
 		return ovsdb.OperationResult{}, fmt.Errorf("ovn: select on %s: %s", table, res[0].Error)
 	}
 	return res[0], nil
+}
+
+// RawTransact exposes per-result error details, which the high-level error
+// message discards. Used for diagnosing schema/protocol mismatches.
+func (c *Client) RawTransact(ctx context.Context, table string) ([]ovsdb.OperationResult, error) {
+	return c.api.Transact(ctx, ovsdb.Operation{Op: ovsdb.OperationSelect, Table: table})
 }
