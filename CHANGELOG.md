@@ -7,6 +7,14 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
 ## [Unreleased]
 
 ### Added
+- Security groups via OVN ACLs (`internal/ovn`): declarative `SecurityGroup` /
+  `SecurityRule` (ingress/egress, protocol, port range, peer) translated into
+  `ACL` rows with OVN match expressions and direction-aware priorities (deny
+  always above allow, deny rules logged), plus `PortSecurity` binding a VM's
+  MAC/IP on its logical switch port so spoofed traffic is dropped at the
+  logical port. The `MICROVM_ANTISPOOF_ENABLE` / `_IP_ENABLE` / `_STRICT`
+  switches behave as they do on the ebtables backend, and ACLs are derived
+  from VM state so they follow the VM and are pruned with it.
 - OVN native DHCP and DNS (`internal/ovn`): `DHCP_Options` rows derived per
   subnet (cidr, netmask, gateway, DNS servers, lease time), MAC-keyed static
   reservations bound to logical switch ports via `dhcpv4_options`, and `DNS`

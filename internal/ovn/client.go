@@ -316,6 +316,177 @@ func (c *Client) PruneDNSRecords(ctx context.Context, desired map[string]string)
 	return c.transact(ctx, ops, "prune DNS records")
 }
 
+// EnsurePortSecurity pins a VM's MAC/IP on its logical switch port, which is
+// what makes OVN drop spoofed traffic at the logical port. Idempotent.
+func (c *Client) EnsurePortSecurity(ctx context.Context, portName string, security PortSecurity) error {
+	ports, err := c.switchPortByName(ctx, portName)
+	if err != nil {
+		return err
+	}
+	if len(ports) == 0 {
+		return fmt.Errorf("ovn: logical switch port %q does not exist", portName)
+	}
+
+	existing := ports[0]
+	if strSlicesEqual(existing.PortSecurity, security.Values()) {
+		return nil
+	}
+
+	row := &LogicalSwitchPort{
+		UUID:         existing.UUID,
+		PortSecurity: security.Values(),
+	}
+	ops, err := c.api.Where(&existing).Update(row, &row.PortSecurity)
+	if err != nil {
+		return fmt.Errorf("ovn: cannot build update op for port %q port_security: %w", portName, err)
+	}
+	return c.transact(ctx, ops, fmt.Sprintf("set port security on %q", portName))
+}
+
+// EnsureACL creates or drift-corrects one ACL row on a logical switch.
+// Rules are matched by (switch, priority, direction, match) so re-applying the
+// same desired state never duplicates rows. Idempotent.
+func (c *Client) EnsureACL(ctx context.Context, switchName string, rule SecurityRule, vmID string) error {
+	switches, err := c.switchByName(ctx, switchName)
+	if err != nil {
+		return err
+	}
+	if len(switches) == 0 {
+		return fmt.Errorf("ovn: logical switch %q does not exist", switchName)
+	}
+
+	action := rule.Action()
+	priority := rule.Priority()
+	direction := rule.Direction
+	match := rule.Match()
+	externalIDs := aclExternalIDs("", vmID, switchName)
+
+	current, err := c.aclBy(ctx, switchName, priority, direction, match)
+	if err != nil {
+		return err
+	}
+
+	if len(current) == 0 {
+		row := &ACL{
+			UUID:        namedRef("acl", fmt.Sprintf("%s-%d-%s", switchName, priority, direction)),
+			Action:      &action,
+			Direction:   &direction,
+			Priority:    priority,
+			Match:       match,
+			ExternalIDs: externalIDs,
+		}
+		if rule.Loggable() {
+			row.Log = true
+		}
+		ops, err := c.api.Create(row)
+		if err != nil {
+			return fmt.Errorf("ovn: cannot build create op for ACL on %q: %w", switchName, err)
+		}
+		return c.transact(ctx, ops, fmt.Sprintf("create ACL on %q", switchName))
+	}
+
+	existing := current[0]
+	if mapsEqual(existing.ExternalIDs, externalIDs) {
+		return nil
+	}
+	row := &ACL{
+		UUID:        existing.UUID,
+		Priority:    existing.Priority,
+		Match:       existing.Match,
+		ExternalIDs: externalIDs,
+	}
+	if action2 := rule.Action(); row.Action == nil || *row.Action != action2 {
+		row.Action = &action
+	}
+	ops, err := c.api.Where(&existing).Update(row, &row.ExternalIDs)
+	if err != nil {
+		return fmt.Errorf("ovn: cannot build update op for ACL on %q: %w", switchName, err)
+	}
+	return c.transact(ctx, ops, fmt.Sprintf("update ACL on %q", switchName))
+}
+
+// DropVMACLs removes every ACL row derived from a VM. Idempotent.
+func (c *Client) DropVMACLs(ctx context.Context, vmID string) error {
+	rows, err := c.ListACLs(ctx)
+	if err != nil {
+		return err
+	}
+
+	var ops []ovsdb.Operation
+	for i := range rows {
+		row := rows[i]
+		if row.ExternalIDs["vmlet-vm"] != vmID || row.ExternalIDs["vmlet-managed"] != "true" {
+			continue
+		}
+		deleteOps, err := c.api.Where(&row).Delete()
+		if err != nil {
+			return fmt.Errorf("ovn: cannot build delete op for ACL of %s: %w", vmID, err)
+		}
+		ops = append(ops, deleteOps...)
+	}
+	return c.transact(ctx, ops, fmt.Sprintf("drop ACLs of %s", vmID))
+}
+
+// PruneACLs deletes vmlet-managed ACLs whose (switch, vm, priority, direction,
+// match) is no longer desired. desired is keyed by switch name.
+func (c *Client) PruneACLs(ctx context.Context, desired map[string][]SecurityRule) error {
+	rows, err := c.ListACLs(ctx)
+	if err != nil {
+		return err
+	}
+
+	var ops []ovsdb.Operation
+	for i := range rows {
+		row := rows[i]
+		if row.ExternalIDs["vmlet-managed"] != "true" {
+			continue
+		}
+		switchName := row.ExternalIDs["vmlet-switch"]
+		if keepACL(desired[switchName], row) {
+			continue
+		}
+		deleteOps, err := c.api.Where(&row).Delete()
+		if err != nil {
+			return fmt.Errorf("ovn: cannot build delete op for ACL %s: %w", row.UUID, err)
+		}
+		ops = append(ops, deleteOps...)
+	}
+	return c.transact(ctx, ops, "prune ACLs")
+}
+
+// ListACLs returns the ACL rows currently in the database.
+func (c *Client) ListACLs(ctx context.Context) ([]ACL, error) {
+	rows := []ACL{}
+	if err := c.api.List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("ovn: listing ACLs: %w", err)
+	}
+	return rows, nil
+}
+
+func (c *Client) aclBy(ctx context.Context, switchName string, priority int, direction, match string) ([]ACL, error) {
+	rows := []ACL{}
+	if err := c.api.WhereCache(func(r *ACL) bool {
+		return r.Priority == priority &&
+			r.Match == match &&
+			strPtrValue(r.Direction) == direction &&
+			r.ExternalIDs["vmlet-switch"] == switchName
+	}).List(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("ovn: lookup of ACL on %q: %w", switchName, err)
+	}
+	return rows, nil
+}
+
+func keepACL(rules []SecurityRule, row ACL) bool {
+	for _, rule := range rules {
+		if rule.Priority() == row.Priority &&
+			rule.Match() == row.Match &&
+			strPtrValue(row.Direction) == rule.Direction {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Client) dhcpByCIDR(ctx context.Context, cidr string) ([]DHCPOptions, error) {
 	rows := []DHCPOptions{}
 	if err := c.api.WhereCache(func(r *DHCPOptions) bool { return r.CIDR == cidr }).List(ctx, &rows); err != nil {
