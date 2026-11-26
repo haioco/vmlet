@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
 ## [Unreleased]
 
 ### Added
+- Floating IPs and distributed NAT (`internal/ovn`): `FloatingIP` / `SNATRule`
+  map the `/vms/{id}/ipv4` addon lifecycle onto OVN `Logical_Router.nat` rows
+  (DNAT with the VM's MAC so OVN answers ARP for the external IP, plus a
+  masquerade SNAT for the subnet). `ReconcileNAT` attaches rows to the router
+  in the same transaction that creates them, so a read after the write always
+  sees an installed rule; detaching an addon removes both the row and the
+  router reference. DNAT and SNAT for the same external IP coexist.
 - Bandwidth QoS via OVS (`internal/ovs`): `SetPortQoS` / `SetPortIngressPolicing`
   map the existing ingress/egress limits to OVS QoS fifo queues (with
   `max-rate`/`min-rate` in bytes per second) and interface ingress policing,

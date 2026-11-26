@@ -196,6 +196,17 @@
             "min": 0,
             "max": "unlimited"
           }
+        },
+        "nat": {
+          "type": {
+            "key": {
+              "type": "uuid",
+              "refTable": "NAT",
+              "refType": "strong"
+            },
+            "min": 0,
+            "max": "unlimited"
+          }
         }
       },
       "indexes": [
@@ -369,6 +380,38 @@
             "min": 0,
             "max": "unlimited"
           }
+        }
+      },
+      "isRoot": true
+    },
+    "NAT": {
+      "columns": {
+        "external_ids": {
+          "type": {
+            "key": "string",
+            "value": "string",
+            "min": 0,
+            "max": "unlimited"
+          }
+        },
+        "external_ip": {
+          "type": "string"
+        },
+        "logical_ip": {
+          "type": "string"
+        },
+        "logical_port": {
+          "type": "string"
+        },
+        "mac": {
+          "type": {
+            "key": "string",
+            "min": 0,
+            "max": 1
+          }
+        },
+        "type": {
+          "type": "string"
         }
       },
       "isRoot": true

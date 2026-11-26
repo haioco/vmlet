@@ -44,6 +44,7 @@ type LogicalRouter struct {
 	UUID        string            `ovsdb:"_uuid"`
 	Name        string            `ovsdb:"name"`
 	Ports       []string          `ovsdb:"ports"`
+	NAT         []string          `ovsdb:"nat"`
 	OtherConfig map[string]string `ovsdb:"other_config"`
 	ExternalIDs map[string]string `ovsdb:"external_ids"`
 }
@@ -67,6 +68,7 @@ func NewClientDBModel() (model.ClientDBModel, error) {
 		"Logical_Router":      &LogicalRouter{},
 		"Logical_Router_Port": &LogicalRouterPort{},
 		"DHCP_Options":        &DHCPOptions{},
+		"NAT":                 &NAT{},
 		"DNS":                 &DNS{},
 		"ACL":                 &ACL{},
 	})
