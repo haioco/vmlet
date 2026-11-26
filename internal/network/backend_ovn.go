@@ -53,6 +53,9 @@ func (b *OVNBackend) ensureConfig() {
 	}
 }
 
+// IntegrationBridge is the OVS integration bridge OVN uses.
+const IntegrationBridge = "br-int"
+
 // ovnEndpoint resolves the Northbound endpoint, defaulting to the conventional
 // local socket.
 func ovnEndpoint() string {
@@ -74,13 +77,15 @@ func (b *OVNBackend) networkName() string {
 	return "default"
 }
 
-// integrationBridge returns the bridge taps attach to.
+// integrationBridge returns the bridge taps attach to. On the OVN backend that
+// is always the OVS integration bridge: the "-network-bridge" flag defaults to
+// lxdbr0, which belongs to the bridge backend, so it must not leak in here.
 func (b *OVNBackend) integrationBridge() string {
 	b.ensureConfig()
-	if name := strings.TrimSpace(b.config.BridgeName); name != "" {
+	if name := strings.TrimSpace(b.config.BridgeName); name != "" && name != "lxdbr0" {
 		return name
 	}
-	return "br-int"
+	return IntegrationBridge
 }
 
 // subnet is the network's CIDR, derived from the bridge CIDR when the operator

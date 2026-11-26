@@ -158,6 +158,16 @@ ensure_bridge() {
 
 # ----------------------------------------------------------------- units -------
 install_units() {
+    # Debian/Ubuntu ship ovsdb-server + ovs-vswitchd inside openvswitch-switch,
+    # and ovn-northd/ovn-controller inside ovn-central/ovn-host. Installing our
+    # own copies overrides those with a unit that fails (ovs-ctl wants
+    # --system-id and conflicts with the packaged daemon management), so on
+    # apt-based systems we enable the packaging instead of replacing it.
+    if [[ "$PKG" == "apt" ]]; then
+        log "using distro-packaged OVS/OVN units (apt)"
+        ok "deferring unit installation to openvswitch-switch / ovn-central"
+        return
+    fi
     log "installing systemd units to ${SYSTEMD_DIR}"
     local units=(ovsdb-server.service ovn-northd.service ovn-controller.service)
     local missing=()
@@ -181,10 +191,21 @@ enable_services() {
         return 0
     fi
     log "enabling and starting OVN services"
-    # Order matters: ovsdb-server before northd before controller.
+    # Order matters: ovs-vswitchd before northd before controller.
     as_root systemctl daemon-reload
+    if [[ "$PKG" == "apt" ]]; then
+        as_root systemctl enable --now openvswitch-switch ovn-central ovn-host
+        for svc in openvswitch-switch ovn-central ovn-host; do
+            if as_root systemctl is-active "$svc" >/dev/null 2>&1; then
+                ok "${svc} is running"
+            else
+                warn "${svc} is not running"
+            fi
+        done
+        return
+    fi
     as_root systemctl enable --now ovsdb-server ovn-northd ovn-controller
-    for svc in openvswitch-switch ovsdb-server ovn-northd ovn-controller; do
+    for svc in ovsdb-server ovn-northd ovn-controller; do
         if as_root systemctl is-enabled "$svc" >/dev/null 2>&1; then
             ok "${svc} enabled"
         else
