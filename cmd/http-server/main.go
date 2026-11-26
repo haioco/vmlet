@@ -1779,6 +1779,9 @@ func (s *HTTPServer) createVMHandler(w http.ResponseWriter, r *http.Request) {
 		case "ipv6-only", "ipv6only", "ipv6":
 			networkMode = models.NetworkModeIPv6Only // IPv6 public + IPv4 private NAT
 			fmt.Printf("   ✅ Using IPv6-only mode (public IPv6 + private IPv4 NAT)\n")
+		case "ovn":
+			networkMode = models.NetworkModeOVN
+			fmt.Printf("   Using OVN mode (logical overlay via br-int)\n")
 		default:
 			networkMode = models.NetworkModeNAT
 		}

@@ -23,6 +23,11 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
   `details`, which is the only place a schema or protocol mismatch is
   actually explained.
 
+- VM creation accepts `network.mode: "ovn"`. The create handler's network-mode
+  switch had cases for static/nat/dhcp/macvlan/ipv6-only and fell through to
+  NAT for anything else, so a request for OVN was silently NAT-routed instead
+  of failing.
+
 ## [Unreleased]
 
 ### Added
