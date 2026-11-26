@@ -43,6 +43,13 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
   `net.ParseCIDR` rejects, and `AllocateSubnetIP` started at the gateway
   address, handing the router's own IP to the first VM.
 
+- OVN ACLs are now bound to their switch. `EnsureACL` wrote the `ACL` row but
+  never listed it in `Logical_Switch.acls`, which is a strong reference: an
+  unlisted row is orphaned and OVN never installs the rule, so security groups
+  silently did nothing. `DropVMACLs` and `PruneACLs` now remove the reference as
+  well as the row. This is the same defect class that affected logical ports and
+  NAT rows.
+
 ## [Unreleased]
 
 ### Added

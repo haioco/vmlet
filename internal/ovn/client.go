@@ -395,6 +395,15 @@ func (c *Client) EnsureACL(ctx context.Context, switchName string, rule Security
 		if err != nil {
 			return fmt.Errorf("ovn: cannot build create op for ACL on %q: %w", switchName, err)
 		}
+		// The switch's acls column is a strong reference: a row that is not
+		// listed there is orphaned and OVN never installs it. Bind it in the
+		// same transaction that creates it.
+		aclRef := row.UUID
+		refOps, err := mutateSwitchACL(c.api, switches[0].UUID, ovsdb.MutateOperationInsert, aclRef)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, refOps...)
 		return c.transact(ctx, ops, fmt.Sprintf("create ACL on %q", switchName))
 	}
 
@@ -424,11 +433,25 @@ func (c *Client) DropVMACLs(ctx context.Context, vmID string) error {
 		return err
 	}
 
+	switches, err := c.switchByName(ctx, switchForACL(rows))
+	if err != nil {
+		return err
+	}
+
 	var ops []ovsdb.Operation
 	for i := range rows {
 		row := rows[i]
 		if row.ExternalIDs["vmlet-vm"] != vmID || row.ExternalIDs["vmlet-managed"] != "true" {
 			continue
+		}
+		for _, ls := range switches {
+			if containsString(ls.ACLs, row.UUID) {
+				refOps, err := mutateSwitchACL(c.api, ls.UUID, ovsdb.MutateOperationDelete, row.UUID)
+				if err != nil {
+					return err
+				}
+				ops = append(ops, refOps...)
+			}
 		}
 		deleteOps, err := c.api.Where(&row).Delete()
 		if err != nil {
@@ -456,6 +479,15 @@ func (c *Client) PruneACLs(ctx context.Context, desired map[string][]SecurityRul
 		switchName := row.ExternalIDs["vmlet-switch"]
 		if keepACL(desired[switchName], row) {
 			continue
+		}
+		if switchRow, lerr := c.switchByName(ctx, switchName); lerr == nil && len(switchRow) > 0 {
+			if containsString(switchRow[0].ACLs, row.UUID) {
+				refOps, merr := mutateSwitchACL(c.api, switchRow[0].UUID, ovsdb.MutateOperationDelete, row.UUID)
+				if merr != nil {
+					return merr
+				}
+				ops = append(ops, refOps...)
+			}
 		}
 		deleteOps, err := c.api.Where(&row).Delete()
 		if err != nil {
@@ -744,4 +776,34 @@ func (c *Client) TransactSelect(ctx context.Context, table string) (ovsdb.Operat
 // message discards. Used for diagnosing schema/protocol mismatches.
 func (c *Client) RawTransact(ctx context.Context, table string) ([]ovsdb.OperationResult, error) {
 	return c.api.Transact(ctx, ovsdb.Operation{Op: ovsdb.OperationSelect, Table: table})
+}
+
+// mutateSwitchACL inserts or deletes an ACL row reference in a switch's acls
+// set. It mirrors mutatePortReference: without it an ACL row is orphaned and
+// OVN never installs the rule.
+func mutateSwitchACL(api client.API, switchUUID string, mutator ovsdb.Mutator, aclUUID string) ([]ovsdb.Operation, error) {
+	target := &LogicalSwitch{}
+	ops, err := api.WhereAll(target, model.Condition{
+		Field:    &target.UUID,
+		Function: ovsdb.ConditionEqual,
+		Value:    switchUUID,
+	}).Mutate(target, model.Mutation{
+		Field:   &target.ACLs,
+		Mutator: mutator,
+		Value:   []string{aclUUID},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ovn: cannot build ACL reference op: %w", err)
+	}
+	return ops, nil
+}
+
+// switchForACL returns the switch a set of ACL rows belongs to.
+func switchForACL(rows []ACL) string {
+	for _, row := range rows {
+		if name := row.ExternalIDs["vmlet-switch"]; name != "" {
+			return name
+		}
+	}
+	return ""
 }
