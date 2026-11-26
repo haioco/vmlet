@@ -28,6 +28,12 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
   NAT for anything else, so a request for OVN was silently NAT-routed instead
   of failing.
 
+- OVN-mode VMs are now actually wired: `CreateMicroVM` includes OVN in the
+  modes that go through `ConfigureNetwork`, and the network manager holds the
+  OVN backend's allocator so a VM's logical port, DHCP reservation and
+  port security are created (instead of a placeholder address). Previously
+  `mode: "ovn"` booted a VM with no logical port and no br-int attachment.
+
 ## [Unreleased]
 
 ### Added

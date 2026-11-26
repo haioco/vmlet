@@ -18,6 +18,17 @@ type NetworkManager struct {
 	dhcpRange   string
 	macPrefix   string
 	portCounter uint32
+
+	// ovnAllocate is set by NewManager when the OVN backend is selected. It
+	// creates the VM's logical port, DHCP reservation and port security, and
+	// returns the address the guest should boot with.
+	ovnAllocate func(vmID, mac string) (*models.NetworkInfo, error)
+}
+
+// SetOVNAllocator wires the OVN backend into the network manager. It is
+// optional: without it OVN modes fall back to a placeholder address.
+func (nm *NetworkManager) SetOVNAllocator(fn func(vmID, mac string) (*models.NetworkInfo, error)) {
+	nm.ovnAllocate = fn
 }
 
 // NewNetworkManager creates a new network manager
@@ -638,7 +649,9 @@ func (nm *NetworkManager) configureIPv6OnlyNetwork(ctx context.Context, microvmI
 	}, nil
 }
 
-// configureOVNNetwork configures OVN networking
+// configureOVNNetwork configures OVN networking: the backend creates the
+// logical port, the DHCP reservation and port security, and the TAP is
+// attached to br-int with the iface-id that binds it to that port.
 func (nm *NetworkManager) configureOVNNetwork(ctx context.Context, microvmID string) (*models.NetworkInfo, error) {
 	// Generate MAC address
 	macAddr := nm.generateMACAddress(microvmID)
@@ -649,21 +662,36 @@ func (nm *NetworkManager) configureOVNNetwork(ctx context.Context, microvmID str
 		return nil, fmt.Errorf("failed to create TAP interface: %w", err)
 	}
 
-	// Connect to OVS bridge
-	ovsBridge := "br-int" // Standard OVN integration bridge
-	if err := nm.addTAPToOVSBridge(ctx, tapName, ovsBridge, ovnPortNameFor(microvmID)); err != nil {
+	// Connect to the OVS integration bridge with the logical port binding.
+	if err := nm.addTAPToOVSBridge(ctx, tapName, ovsIntegrationBridge, ovnPortNameFor(microvmID)); err != nil {
 		return nil, fmt.Errorf("failed to add TAP to OVS bridge: %w", err)
 	}
 
-	// Configure OVN logical port
-	if err := nm.configureOVNLogicalPort(microvmID, macAddr); err != nil {
-		return nil, fmt.Errorf("failed to configure OVN logical port: %w", err)
-	}
-
-	// Assign IP from OVN subnet
-	ipAddr, err := nm.assignOVNIP(microvmID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to assign OVN IP: %w", err)
+	ipAddr := ""
+	if nm.ovnAllocate != nil {
+		// The backend owns the logical topology: it allocates and pins the
+		// address, binds the subnet's DHCP_Options and sets port security.
+		info, err := nm.ovnAllocate(microvmID, macAddr)
+		if err != nil {
+			return nil, fmt.Errorf("failed to allocate OVN network: %w", err)
+		}
+		if info != nil {
+			if info.IPAddress != "" {
+				ipAddr = info.IPAddress
+			}
+			if info.MACAddress != "" {
+				macAddr = info.MACAddress
+			}
+		}
+	} else {
+		// No backend wired (e.g. tests): keep a placeholder address so the VM
+		// still boots, and say so loudly.
+		fmt.Printf("⚠️  OVN backend not wired; VM %s gets a placeholder OVN address\n", microvmID)
+		addr, err := nm.assignOVNIP(microvmID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to assign OVN IP: %w", err)
+		}
+		ipAddr = addr
 	}
 
 	return &models.NetworkInfo{
@@ -1668,6 +1696,9 @@ func (nm *NetworkManager) releasePublicIP(microvmID string) error {
 	// Release public IP allocation
 	return nil
 }
+
+// ovsIntegrationBridge is the bridge OVN's ovn-controller manages.
+const ovsIntegrationBridge = "br-int"
 
 // ovnPortNameFor derives the OVN logical switch port name for a VM. OVN's
 // ovn-controller binds it to the TAP through the interface's

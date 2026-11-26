@@ -316,6 +316,27 @@ func NewManager(config *Config, reservationMgr *network.ReservationManager) (*Ma
 		return nil, fmt.Errorf("failed to initialize network backend: %w", err)
 	}
 
+	// The OVN backend owns the logical topology; hand its allocator to the
+	// network manager so an OVN-mode VM gets a logical port, a DHCP
+	// reservation and port security, not a placeholder address.
+	if ovnBackend, ok := enhancedNetwork.(*network.OVNBackend); ok {
+		networkManager.SetOVNAllocator(func(vmID, mac string) (*models.NetworkInfo, error) {
+			info, err := ovnBackend.AllocateVMNetwork(vmID, mac)
+			if err != nil {
+				return nil, err
+			}
+			if info == nil {
+				return nil, nil
+			}
+			return &models.NetworkInfo{
+				IPAddress:        info.IPAddress,
+				MACAddress:       info.MACAddress,
+				AssignmentMethod: models.NetworkModeOVN,
+				SSHPort:          22,
+			}, nil
+		})
+	}
+
 	// Create boot validator
 	bootValidator := validation.NewBootValidator()
 
@@ -389,8 +410,9 @@ func (m *Manager) CreateMicroVM(ctx context.Context, microvm *models.MicroVMInst
 	fmt.Printf("🔍 DEBUG Manager.CreateMicroVM: VM %s has AssignmentMethod='%s' (comparing to NetworkModeDHCP='%s')\n",
 		microvm.ID, microvm.Network.AssignmentMethod, models.NetworkModeDHCP)
 
-	// For DHCP, MACVLAN, and IPv6-only modes, use the NetworkManager to configure networking properly
-	if microvm.Network.AssignmentMethod == models.NetworkModeDHCP || microvm.Network.AssignmentMethod == models.NetworkModeMACVLAN || microvm.Network.AssignmentMethod == models.NetworkModeIPv6Only {
+	// For DHCP, MACVLAN, IPv6-only and OVN modes, use the NetworkManager to
+	// configure networking properly
+	if microvm.Network.AssignmentMethod == models.NetworkModeDHCP || microvm.Network.AssignmentMethod == models.NetworkModeMACVLAN || microvm.Network.AssignmentMethod == models.NetworkModeIPv6Only || microvm.Network.AssignmentMethod == models.NetworkModeOVN {
 		fmt.Printf("🌐 Configuring %s networking for VM %s...\n", microvm.Network.AssignmentMethod, microvm.ID)
 
 		// Check if custom MAC/IP are provided in the VM config
