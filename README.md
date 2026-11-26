@@ -427,6 +427,7 @@ Engineering and operations guides live in [`docs/`](docs/):
 | [API_DOCUMENTATION.md](docs/API_DOCUMENTATION.md) | Full REST reference |
 | [DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) · [PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) | Deploy & harden |
 | [NETWORKING_CONFIGURATION_GUIDE.md](docs/NETWORKING_CONFIGURATION_GUIDE.md) | Bridges, DHCP, MACVLAN, IPv6 |
+| [OVN.md](docs/OVN.md) | OVN backend: architecture, setup, tuning, troubleshooting |
 | [STORAGE_CONFIGURATION_GUIDE.md](docs/STORAGE_CONFIGURATION_GUIDE.md) | Local / ZFS / snapshots |
 | [VM_MIGRATION_GUIDE.md](docs/VM_MIGRATION_GUIDE.md) | Live & cold migration |
 | [MONITORING_GUIDE.md](docs/MONITORING_GUIDE.md) | Metrics & alerting |

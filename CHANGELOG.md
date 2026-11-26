@@ -4,6 +4,16 @@ All notable changes to vmlet are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 adheres to [Semantic Versioning](docs/VERSIONING.md).
 
+- OVN operator guide ([docs/OVN.md](docs/OVN.md)): architecture diagram and
+  the control-plane/data-plane split (which is the key to debugging), host
+  prerequisites and `scripts/setup-ovn-host.sh` usage, the
+  `MICROVM_NETWORK_BACKEND` selection and OVN config block, the derived naming
+  scheme and `external_ids` conventions (including "never hand-edit
+  vmlet-managed rows"), copy-pasteable verification commands, MTU/Geneve tuning
+  with the path-MTU black-hole symptom spelled out, and a layer-by-layer
+  troubleshooting section with `ovn-trace` / `ovs-ofctl` / `ovn-nbctl` and a
+  symptom table.
+
 ## [Unreleased]
 
 ### Added
