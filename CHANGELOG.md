@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
 ## [Unreleased]
 
 ### Added
+- Bridge → OVN migration (`internal/ovn/migrate.go`): a pure planner that turns
+  current + desired per-VM state into an ordered step list — validate (a VM
+  missing its tap/bridge/network/MAC is refused rather than half-migrated),
+  detach from the old bridge, attach to `br-int` with the `iface-id` binding,
+  reconcile the logical port/DHCP/security, then hand bridge-side rule cleanup
+  to the bridge backend (the one TODO step). VMs already on OVN are only
+  reconciled. `scripts/ovn-e2e-test.sh` exercises create → connect → migrate →
+  snapshot → clone → delete against the OVN backend, asserting the VM keeps its
+  IP across migration and that `br-int` is clean afterwards; a `--live` flag
+  gates every destructive step so the script is a dry run by default.
 - Floating IPs and distributed NAT (`internal/ovn`): `FloatingIP` / `SNATRule`
   map the `/vms/{id}/ipv4` addon lifecycle onto OVN `Logical_Router.nat` rows
   (DNAT with the VM's MAC so OVN answers ARP for the external IP, plus a
