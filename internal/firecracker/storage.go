@@ -14,10 +14,10 @@ import (
 
 // StorageManager handles storage provisioning for microVMs
 type StorageManager struct {
-	workDir     string
-	imagesDir   string
-	s3fsDir     string
-	nbdDir      string
+	workDir   string
+	imagesDir string
+	s3fsDir   string
+	nbdDir    string
 }
 
 // StoragePaths contains paths to storage devices for a microVM
@@ -29,26 +29,26 @@ type StoragePaths struct {
 
 // StorageInfo contains information about microVM storage
 type StorageInfo struct {
-	MicroVMID    string                `json:"microvm_id"`
-	StorageType  models.StorageType    `json:"storage_type"`
-	TotalSizeMB  uint32               `json:"total_size_mb"`
-	UsedSizeMB   uint32               `json:"used_size_mb"`
-	Paths        *StoragePaths        `json:"paths"`
-	S3Config     *models.S3Config     `json:"s3_config,omitempty"`
-	LastBackup   *time.Time           `json:"last_backup,omitempty"`
-	BackupCount  int                  `json:"backup_count"`
+	MicroVMID   string             `json:"microvm_id"`
+	StorageType models.StorageType `json:"storage_type"`
+	TotalSizeMB uint32             `json:"total_size_mb"`
+	UsedSizeMB  uint32             `json:"used_size_mb"`
+	Paths       *StoragePaths      `json:"paths"`
+	S3Config    *models.S3Config   `json:"s3_config,omitempty"`
+	LastBackup  *time.Time         `json:"last_backup,omitempty"`
+	BackupCount int                `json:"backup_count"`
 }
 
 // StorageCapabilities describes the capabilities of a storage type
 type StorageCapabilities struct {
-	SupportsResize     bool   `json:"supports_resize"`
-	SupportsBackup     bool   `json:"supports_backup"`
-	SupportsRestore    bool   `json:"supports_restore"`
-	SupportsSnapshot   bool   `json:"supports_snapshot"`
-	RequiresS3Config   bool   `json:"requires_s3_config"`
-	MaxSizeMB          uint32 `json:"max_size_mb"`
-	MinSizeMB          uint32 `json:"min_size_mb"`
-	Description        string `json:"description"`
+	SupportsResize   bool   `json:"supports_resize"`
+	SupportsBackup   bool   `json:"supports_backup"`
+	SupportsRestore  bool   `json:"supports_restore"`
+	SupportsSnapshot bool   `json:"supports_snapshot"`
+	RequiresS3Config bool   `json:"requires_s3_config"`
+	MaxSizeMB        uint32 `json:"max_size_mb"`
+	MinSizeMB        uint32 `json:"min_size_mb"`
+	Description      string `json:"description"`
 }
 
 // NewStorageManager creates a new storage manager
@@ -225,7 +225,7 @@ func (sm *StorageManager) CleanupStorage(ctx context.Context, microvmID string, 
 
 func (sm *StorageManager) createRootfsImage(imagePath string, sizeMB uint32) error {
 	// Create empty file
-	cmd := exec.Command("dd", "if=/dev/zero", fmt.Sprintf("of=%s", imagePath), 
+	cmd := exec.Command("dd", "if=/dev/zero", fmt.Sprintf("of=%s", imagePath),
 		"bs=1M", fmt.Sprintf("count=%d", sizeMB))
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to create image file: %w", err)
@@ -261,7 +261,7 @@ func (sm *StorageManager) createRootfsImage(imagePath string, sizeMB uint32) err
 
 func (sm *StorageManager) createDataImage(imagePath string, sizeMB uint32) error {
 	// Create empty file
-	cmd := exec.Command("dd", "if=/dev/zero", fmt.Sprintf("of=%s", imagePath), 
+	cmd := exec.Command("dd", "if=/dev/zero", fmt.Sprintf("of=%s", imagePath),
 		"bs=1M", fmt.Sprintf("count=%d", sizeMB))
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to create data image file: %w", err)
@@ -286,7 +286,7 @@ func (sm *StorageManager) mountS3Bucket(s3Config *models.S3Config, mountPoint st
 		"-o", fmt.Sprintf("url=https://s3.%s.amazonaws.com", s3Config.Region),
 		"-o", "use_cache=/tmp",
 		"-o", "allow_other")
-	
+
 	return cmd.Run()
 }
 
@@ -298,14 +298,14 @@ func (sm *StorageManager) unmountS3Bucket(mountPoint string) error {
 func (sm *StorageManager) startNBDServer(microvmID, diskType string, s3Config *models.S3Config, sizeMB uint32) (string, error) {
 	// Create NBD device path
 	nbdDevice := fmt.Sprintf("/dev/nbd%d", sm.getNextNBDDevice())
-	
+
 	// Create S3 object key
 	s3Key := fmt.Sprintf("microvms/%s/%s.img", microvmID, diskType)
-	
+
 	// Start NBD server (this is a simplified example - you'd use a proper S3-NBD server)
-	cmd := exec.Command("qemu-nbd", "--connect", nbdDevice, 
+	cmd := exec.Command("qemu-nbd", "--connect", nbdDevice,
 		fmt.Sprintf("s3://%s/%s", s3Config.Bucket, s3Key))
-	
+
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("failed to start NBD server: %w", err)
 	}
@@ -393,22 +393,22 @@ func (sm *StorageManager) cleanupLocalStorage(microvmID string) error {
 	// Remove image files
 	rootfsPath := filepath.Join(sm.imagesDir, fmt.Sprintf("%s-rootfs.ext4", microvmID))
 	dataPath := filepath.Join(sm.imagesDir, fmt.Sprintf("%s-data.ext4", microvmID))
-	
+
 	os.Remove(rootfsPath)
 	os.Remove(dataPath)
-	
+
 	return nil
 }
 
 func (sm *StorageManager) cleanupS3FuseStorage(microvmID string) error {
 	mountPoint := filepath.Join(sm.s3fsDir, microvmID)
-	
+
 	// Unmount S3 bucket
 	sm.unmountS3Bucket(mountPoint)
-	
+
 	// Remove mount point
 	os.RemoveAll(mountPoint)
-	
+
 	return nil
 }
 
@@ -416,7 +416,7 @@ func (sm *StorageManager) cleanupS3NBDStorage(microvmID string) error {
 	// Stop NBD servers
 	sm.stopNBDServer(microvmID, "rootfs")
 	sm.stopNBDServer(microvmID, "data")
-	
+
 	return nil
 }
 
@@ -425,11 +425,11 @@ func (sm *StorageManager) cleanupHybridStorage(microvmID string, s3Config *model
 	if err := sm.cleanupLocalStorage(microvmID); err != nil {
 		return err
 	}
-	
+
 	// Remove sync script
 	syncScript := filepath.Join(sm.workDir, "sync", fmt.Sprintf("%s-sync.sh", microvmID))
 	os.Remove(syncScript)
-	
+
 	return nil
 }
 
@@ -437,29 +437,29 @@ func (sm *StorageManager) cleanupHybridStorage(microvmID string, s3Config *model
 func (sm *StorageManager) GetStorageInfo(ctx context.Context, microvmID string) (*StorageInfo, error) {
 	// This would typically query the storage system for actual usage
 	// For now, we'll return basic information based on file system
-	
+
 	rootfsPath := filepath.Join(sm.imagesDir, fmt.Sprintf("%s-rootfs.ext4", microvmID))
 	dataPath := filepath.Join(sm.imagesDir, fmt.Sprintf("%s-data.ext4", microvmID))
-	
+
 	var totalSize, usedSize uint32
-	
+
 	// Check rootfs
 	if stat, err := os.Stat(rootfsPath); err == nil {
 		totalSize += uint32(stat.Size() / (1024 * 1024)) // Convert to MB
 		usedSize += uint32(stat.Size() / (1024 * 1024))  // Assume fully used for simplicity
 	}
-	
+
 	// Check data disk
 	if stat, err := os.Stat(dataPath); err == nil {
 		totalSize += uint32(stat.Size() / (1024 * 1024))
 		usedSize += uint32(stat.Size() / (1024 * 1024))
 	}
-	
+
 	paths := &StoragePaths{
 		RootfsPath: rootfsPath,
 		DataPath:   dataPath,
 	}
-	
+
 	info := &StorageInfo{
 		MicroVMID:   microvmID,
 		StorageType: models.StorageTypeLocal, // Default assumption
@@ -467,7 +467,7 @@ func (sm *StorageManager) GetStorageInfo(ctx context.Context, microvmID string) 
 		UsedSizeMB:  usedSize,
 		Paths:       paths,
 	}
-	
+
 	return info, nil
 }
 
@@ -490,7 +490,7 @@ func (sm *StorageManager) BackupStorage(ctx context.Context, microvmID string, c
 	if s3Config == nil {
 		return fmt.Errorf("S3 config is required for backup")
 	}
-	
+
 	switch config.Type {
 	case models.StorageTypeLocal, models.StorageTypeHybrid:
 		return sm.backupLocalStorage(microvmID, s3Config)
@@ -506,7 +506,7 @@ func (sm *StorageManager) RestoreStorage(ctx context.Context, microvmID string, 
 	if s3Config == nil {
 		return fmt.Errorf("S3 config is required for restore")
 	}
-	
+
 	switch config.Type {
 	case models.StorageTypeLocal, models.StorageTypeHybrid:
 		return sm.restoreLocalStorage(microvmID, s3Config, backupID)
@@ -567,49 +567,49 @@ func (sm *StorageManager) GetStorageCapabilities() map[models.StorageType]Storag
 
 func (sm *StorageManager) resizeLocalStorage(microvmID string, newSizeMB uint32) error {
 	dataPath := filepath.Join(sm.imagesDir, fmt.Sprintf("%s-data.ext4", microvmID))
-	
+
 	// Check current size
 	stat, err := os.Stat(dataPath)
 	if err != nil {
 		return fmt.Errorf("failed to get current size: %w", err)
 	}
-	
+
 	currentSizeMB := uint32(stat.Size() / (1024 * 1024))
 	if newSizeMB <= currentSizeMB {
 		return fmt.Errorf("new size must be larger than current size (%d MB)", currentSizeMB)
 	}
-	
+
 	// Extend the file
 	additionalSizeMB := newSizeMB - currentSizeMB
 	cmd := exec.Command("dd", "if=/dev/zero", fmt.Sprintf("of=%s", dataPath),
 		"bs=1M", fmt.Sprintf("count=%d", additionalSizeMB), "conv=notrunc", "oflag=append")
-	
+
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to extend storage: %w", err)
 	}
-	
+
 	// Resize the filesystem
 	cmd = exec.Command("resize2fs", dataPath)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to resize filesystem: %w", err)
 	}
-	
+
 	return nil
 }
 
 func (sm *StorageManager) backupLocalStorage(microvmID string, s3Config *models.S3Config) error {
 	rootfsPath := filepath.Join(sm.imagesDir, fmt.Sprintf("%s-rootfs.ext4", microvmID))
 	dataPath := filepath.Join(sm.imagesDir, fmt.Sprintf("%s-data.ext4", microvmID))
-	
+
 	timestamp := time.Now().Format("20060102-150405")
 	backupID := fmt.Sprintf("%s-%s", microvmID, timestamp)
-	
+
 	// Backup rootfs
 	rootfsKey := fmt.Sprintf("backups/%s/rootfs.ext4", backupID)
 	if err := sm.uploadToS3(rootfsPath, s3Config, rootfsKey); err != nil {
 		return fmt.Errorf("failed to backup rootfs: %w", err)
 	}
-	
+
 	// Backup data disk if it exists
 	if _, err := os.Stat(dataPath); err == nil {
 		dataKey := fmt.Sprintf("backups/%s/data.ext4", backupID)
@@ -617,27 +617,27 @@ func (sm *StorageManager) backupLocalStorage(microvmID string, s3Config *models.
 			return fmt.Errorf("failed to backup data disk: %w", err)
 		}
 	}
-	
+
 	return nil
 }
 
 func (sm *StorageManager) restoreLocalStorage(microvmID string, s3Config *models.S3Config, backupID string) error {
 	rootfsPath := filepath.Join(sm.imagesDir, fmt.Sprintf("%s-rootfs.ext4", microvmID))
 	dataPath := filepath.Join(sm.imagesDir, fmt.Sprintf("%s-data.ext4", microvmID))
-	
+
 	// Restore rootfs
 	rootfsKey := fmt.Sprintf("backups/%s/rootfs.ext4", backupID)
 	if err := sm.downloadFromS3(s3Config, rootfsKey, rootfsPath); err != nil {
 		return fmt.Errorf("failed to restore rootfs: %w", err)
 	}
-	
+
 	// Restore data disk if backup exists
 	dataKey := fmt.Sprintf("backups/%s/data.ext4", backupID)
 	if err := sm.downloadFromS3(s3Config, dataKey, dataPath); err != nil {
 		// Data disk backup might not exist, which is okay
 		fmt.Printf("Warning: failed to restore data disk (might not exist): %v\n", err)
 	}
-	
+
 	return nil
 }
 
@@ -649,7 +649,7 @@ func (sm *StorageManager) uploadToS3(localPath string, s3Config *models.S3Config
 		fmt.Sprintf("AWS_SECRET_ACCESS_KEY=%s", s3Config.SecretKey),
 		fmt.Sprintf("AWS_DEFAULT_REGION=%s", s3Config.Region),
 	)
-	
+
 	return cmd.Run()
 }
 
@@ -661,6 +661,6 @@ func (sm *StorageManager) downloadFromS3(s3Config *models.S3Config, s3Key, local
 		fmt.Sprintf("AWS_SECRET_ACCESS_KEY=%s", s3Config.SecretKey),
 		fmt.Sprintf("AWS_DEFAULT_REGION=%s", s3Config.Region),
 	)
-	
+
 	return cmd.Run()
 }

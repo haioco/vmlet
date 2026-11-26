@@ -78,7 +78,7 @@ func testSystemValidation(t *testing.T, manager *Manager) {
 	}
 
 	// Log validation results
-	t.Logf("System validation result: Valid=%v, Issues=%d, Warnings=%d", 
+	t.Logf("System validation result: Valid=%v, Issues=%d, Warnings=%d",
 		result.Valid, len(result.Issues), len(result.Warnings))
 
 	for _, issue := range result.Issues {
@@ -153,7 +153,7 @@ func testEnhancedVMCreation(t *testing.T, manager *Manager) {
 		t.Error("VM should have an SSH port assigned")
 	}
 
-	t.Logf("VM created successfully: IP=%s, MAC=%s, SSH Port=%d", 
+	t.Logf("VM created successfully: IP=%s, MAC=%s, SSH Port=%d",
 		microvm.Network.IPAddress, microvm.Network.MACAddress, microvm.Network.SSHPort)
 
 	// Clean up
@@ -260,7 +260,7 @@ func testBootValidation(t *testing.T, manager *Manager) {
 
 	// Test validator reset
 	validator.Reset()
-	
+
 	// Test timeout configuration
 	validator.SetBootTimeout(30 * time.Second)
 	validator.SetSSHTimeout(15 * time.Second)
@@ -307,7 +307,7 @@ func testCleanupAndResourceManagement(t *testing.T, manager *Manager) {
 	if err != nil {
 		t.Errorf("Failed to get cache stats: %v", err)
 	} else {
-		t.Logf("Cache stats: %d total entries, %d base images, %d overlays", 
+		t.Logf("Cache stats: %d total entries, %d base images, %d overlays",
 			stats.TotalEntries, stats.BaseImages, stats.Overlays)
 	}
 
@@ -442,7 +442,7 @@ func BenchmarkVMCreation(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		
+
 		microvm := &models.MicroVMInstance{
 			ID:     fmt.Sprintf("bench-vm-%d", i),
 			NodeID: "bench-node",

@@ -1,0 +1,26 @@
+[Unit]
+Description=Firecracker VM %i
+Documentation=https://github.com/haioco/vmlet
+After=network.target
+
+[Service]
+Type=simple
+# The paths are templated at install time: see ensureSystemdTemplate() in
+# internal/firecracker, which substitutes the configured work directory and
+# Firecracker binary. Use %i for the VM id in both places.
+ExecStart=@FIRECRACKER_BIN@ --api-sock /run/microvmsvc/%i.sock --config-file @WORK_DIR@/microvms/%i/config.json
+StandardInput=file:@WORK_DIR@/microvms/%i/console.in
+StandardOutput=journal
+StandardError=journal
+# Firecracker needs the TAP device it is given, plus privileges for KVM.
+ExecStartPre=-/bin/mkdir -p /run/microvmsvc
+
+# Each VM is an independent process group so one VM dying never takes its
+# siblings with it.
+KillMode=process
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

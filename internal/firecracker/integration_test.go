@@ -70,7 +70,7 @@ func TestFirecrackerIntegration(t *testing.T) {
 		// We expect this to fail due to missing kernel/rootfs files, but it should not panic
 		if err == nil {
 			t.Log("MicroVM creation succeeded (unexpected but good)")
-			
+
 			// If creation succeeded, test other operations
 			t.Run("GetStatus", func(t *testing.T) {
 				status, err := manager.GetMicroVMStatus(ctx, microvm.ID)

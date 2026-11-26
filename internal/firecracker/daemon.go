@@ -65,7 +65,7 @@ func StartFirecrackerDaemon(firecrackerBin, configPath, socketPath, logFile, pid
 func StartFirecrackerDaemonGo(firecrackerBin, configPath, socketPath, logFile, pidFile string) error {
 	// Remove existing socket
 	os.Remove(socketPath)
-	
+
 	// Create log file
 	logWriter, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
@@ -81,10 +81,10 @@ func StartFirecrackerDaemonGo(firecrackerBin, configPath, socketPath, logFile, p
 
 	// Set up process attributes for maximum independence
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid:    true, // Create new session
-		Setpgid:   true, // Create new process group
-		Pgid:      0,    // Use process PID as group ID
-		Noctty:    true, // Don't assign controlling terminal
+		Setsid:     true,  // Create new session
+		Setpgid:    true,  // Create new process group
+		Pgid:       0,     // Use process PID as group ID
+		Noctty:     true,  // Don't assign controlling terminal
 		Foreground: false, // Run in background
 	}
 

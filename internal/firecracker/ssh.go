@@ -98,7 +98,7 @@ func (skm *SSHKeyManager) DeleteKeyPair(microvmID string) error {
 // GetPublicKey retrieves just the public key for a microVM
 func (skm *SSHKeyManager) GetPublicKey(microvmID string) (string, error) {
 	publicKeyPath := filepath.Join(skm.keyDir, fmt.Sprintf("%s_rsa.pub", microvmID))
-	
+
 	publicKeyBytes, err := os.ReadFile(publicKeyPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read public key: %w", err)
@@ -110,7 +110,7 @@ func (skm *SSHKeyManager) GetPublicKey(microvmID string) (string, error) {
 // GetPrivateKey retrieves just the private key for a microVM
 func (skm *SSHKeyManager) GetPrivateKey(microvmID string) (string, error) {
 	privateKeyPath := filepath.Join(skm.keyDir, fmt.Sprintf("%s_rsa", microvmID))
-	
+
 	privateKeyBytes, err := os.ReadFile(privateKeyPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read private key: %w", err)

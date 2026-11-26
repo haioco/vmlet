@@ -383,6 +383,16 @@ func NewManager(config *Config, reservationMgr *network.ReservationManager) (*Ma
 		return nil, fmt.Errorf("network backend validation failed: %w", err)
 	}
 
+	// Repair the per-VM systemd template now rather than on the first VM:
+	// a host that previously ran another microVM platform has a template
+	// pointing at a directory that no longer exists, and the first VM would
+	// then fail with systemd's opaque "208/STDIN". Only warn here so a
+	// non-root or container start still succeeds; the VM start path reports
+	// a real error if the template genuinely cannot be written.
+	if err := manager.ensureSystemdTemplate(); err != nil {
+		fmt.Printf("⚠️  Could not install the %s systemd template: %v\n", systemTemplateName, err)
+	}
+
 	// Skip system validation for now to avoid hanging
 	fmt.Printf("⚠️  Skipping system validation to avoid blocking\n")
 
@@ -1455,6 +1465,14 @@ func (m *Manager) startFirecracker(ctx context.Context, microvmID, configPath, s
 
 	// Use systemd template service for VM independence
 	serviceName := fmt.Sprintf("firecracker-vm@%s", microvmID)
+
+	// The template has to exist with the right paths, and it has to be
+	// regenerated whenever this host's work dir or Firecracker binary changes.
+	// A stale one (e.g. left by a previous install pointing at a removed
+	// directory) fails with an opaque "208/STDIN" from systemd.
+	if err := m.ensureSystemdTemplate(); err != nil {
+		return fmt.Errorf("failed to install %s systemd template: %w", systemTemplateName, err)
+	}
 
 	// Remove existing socket
 	os.Remove(socketPath)
