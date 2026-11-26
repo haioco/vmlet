@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
 ## [Unreleased]
 
 ### Added
+- Bandwidth QoS via OVS (`internal/ovs`): `SetPortQoS` / `SetPortIngressPolicing`
+  map the existing ingress/egress limits to OVS QoS fifo queues (with
+  `max-rate`/`min-rate` in bytes per second) and interface ingress policing,
+  reproducing the tc implementation's rate parsing and burst heuristics
+  (32k/64k/128k/256k/384k by rate band) so limits feel identical. Clearing a
+  limit removes the QoS row and zeroes policing.
 - Security groups via OVN ACLs (`internal/ovn`): declarative `SecurityGroup` /
   `SecurityRule` (ingress/egress, protocol, port range, peer) translated into
   `ACL` rows with OVN match expressions and direction-aware priorities (deny

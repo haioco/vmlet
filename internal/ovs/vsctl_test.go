@@ -136,6 +136,11 @@ func (f *fakeOVS) dispatch(args ...string) (string, error) {
 		}
 		f.extIDs[row][key] = value
 		return "", nil
+	case "clear":
+		// Detaching a column: ovs-vsctl clear port <p> qos. Record it so tests
+		// can assert the clearing happened.
+		f.commands = append(f.commands, "applied-clear")
+		return "", nil
 	case "get":
 		row, key := args[len(args)-2], args[len(args)-1]
 		value, ok := f.extIDs[row][strings.TrimPrefix(key, "external_ids:")]
