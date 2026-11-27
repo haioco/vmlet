@@ -1699,11 +1699,19 @@ func (m *Manager) generateEnhancedConfig(microvm *models.MicroVMInstance, vmImag
 				// Format ip=IP::GATEWAY:NETMASK:HOSTNAME:IFACE:off
 				ipArg := ""
 				fmt.Printf("🔍 Boot args debug: AssignmentMethod='%s', IPAddress='%s', checking DHCP mode\n", microvm.Network.AssignmentMethod, microvm.Network.IPAddress)
-				if microvm.Network.AssignmentMethod != models.NetworkModeDHCP && microvm.Network.IPAddress != "" && microvm.Network.IPAddress != "0.0.0.0" {
+				// A static ip= is only correct for modes that actually have a
+				// bridge gateway to point at. OVN is excluded for two reasons:
+				// its guest must use the DHCP_Options we bound to its logical
+				// port, and the hardcoded 192.168.100.1 below is the NAT-mode
+				// gateway, which does not exist on an OVN network -- passing it
+				// left an OVN VM with a default route straight off the overlay.
+				usesDHCP := microvm.Network.AssignmentMethod == models.NetworkModeDHCP ||
+					microvm.Network.AssignmentMethod == models.NetworkModeOVN
+				if !usesDHCP && microvm.Network.IPAddress != "" && microvm.Network.IPAddress != "0.0.0.0" {
 					ipArg = fmt.Sprintf("ip=%s::%s:255.255.255.0:%s:eth0:off ", microvm.Network.IPAddress, "192.168.100.1", microvm.ID)
 					fmt.Printf("🔍 Boot args: Adding ip= parameter: %s\n", ipArg)
 				} else {
-					fmt.Printf("🔍 Boot args: Skipping ip= parameter (DHCP mode or empty/0.0.0.0 IP)\n")
+					fmt.Printf("🔍 Boot args: Skipping ip= parameter (DHCP/OVN mode or empty/0.0.0.0 IP)\n")
 				}
 				// Include 'nomodules' to prevent attempts to load kernel modules in a microVM (saves time and noise)
 				// Add cloud-init.dslist=NoCloud to disable EC2 metadata lookups (169.254.169.254)

@@ -50,6 +50,14 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
   well as the row. This is the same defect class that affected logical ports and
   NAT rows.
 
+- OVN guests no longer boot with a static address on the NAT-mode gateway.
+  `generateEnhancedConfig` only excluded DHCP from its static-`ip=` branch, so
+  an OVN VM (which has an allocated address) took it and got
+  `ip=<ip>::192.168.100.1:...` — a hardcoded gateway that does not exist on an
+  OVN network, leaving the guest with a default route straight off the overlay.
+  OVN now boots with `ip=dhcp`, which is what the `DHCP_Options` row bound to
+  its logical port actually serves.
+
 ## [Unreleased]
 
 ### Added
