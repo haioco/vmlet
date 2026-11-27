@@ -129,6 +129,14 @@ func (b *OVNBackend) SetNetworks(networks []*OVNNetwork) {
 			Name: "default",
 		}
 	}
+
+	// Reconcile topology for the new set if we are already connected.
+	if b.ovn != nil {
+		go func() {
+			ctx := context.Background()
+			_ = b.reconcileTopology(ctx)
+		}()
+	}
 }
 
 // SetStaticIP records a user-requested static IP for a VM. Called before
