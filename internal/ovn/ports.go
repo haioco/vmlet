@@ -124,3 +124,28 @@ func isBroadcast(ipNet *net.IPNet, ip net.IP) bool {
 	_ = bits
 	return broadcast.Equal(ip)
 }
+
+// ValidateSubnetIP checks a user-supplied static address against a subnet:
+// parseable, inside the subnet, not the gateway, and not already in use.
+func ValidateSubnetIP(subnet, gateway, ip string, inUse []string) error {
+	_, ipNet, err := ParseCIDR(subnet)
+	if err != nil {
+		return fmt.Errorf("invalid subnet %q: %w", subnet, err)
+	}
+	addr := net.ParseIP(ip)
+	if addr == nil {
+		return fmt.Errorf("not a valid IPv4 address")
+	}
+	if !ipNet.Contains(addr) {
+		return fmt.Errorf("outside the network subnet %s", subnet)
+	}
+	if gateway != "" && addr.Equal(net.ParseIP(gateway)) {
+		return fmt.Errorf("is the network gateway (%s)", gateway)
+	}
+	for _, used := range inUse {
+		if used == ip {
+			return fmt.Errorf("already in use by another VM on this network")
+		}
+	}
+	return nil
+}

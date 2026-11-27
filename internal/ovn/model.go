@@ -41,11 +41,24 @@ type LogicalSwitchPort struct {
 // LogicalRouter is a row of the Logical_Router table. Note the real schema has
 // no other_config on this table; free-form settings live in options.
 type LogicalRouter struct {
+	UUID         string            `ovsdb:"_uuid"`
+	Name         string            `ovsdb:"name"`
+	Ports        []string          `ovsdb:"ports"`
+	NAT          []string          `ovsdb:"nat"`
+	StaticRoutes []string          `ovsdb:"static_routes"`
+	Options      map[string]string `ovsdb:"options"`
+	ExternalIDs  map[string]string `ovsdb:"external_ids"`
+}
+
+// StaticRoute is a row of the Logical_Router_Static_Route table: a prefix and
+// the next hop that reaches it. Routes are what make two peered routers
+// exchange subnets, rather than only reach each other's link addresses.
+type StaticRoute struct {
 	UUID        string            `ovsdb:"_uuid"`
-	Name        string            `ovsdb:"name"`
-	Ports       []string          `ovsdb:"ports"`
-	NAT         []string          `ovsdb:"nat"`
-	Options     map[string]string `ovsdb:"options"`
+	IPPrefix    string            `ovsdb:"ip_prefix"`
+	Nexthop     string            `ovsdb:"nexthop"`
+	OutputPort  *string           `ovsdb:"output_port"`
+	Policy      *string           `ovsdb:"policy"`
 	ExternalIDs map[string]string `ovsdb:"external_ids"`
 }
 
@@ -64,13 +77,14 @@ type LogicalRouterPort struct {
 // NewClientDBModel builds the libovsdb model of the tables vmlet manages.
 func NewClientDBModel() (model.ClientDBModel, error) {
 	return model.NewClientDBModel(NorthboundDatabase, map[string]model.Model{
-		"Logical_Switch":      &LogicalSwitch{},
-		"Logical_Switch_Port": &LogicalSwitchPort{},
-		"Logical_Router":      &LogicalRouter{},
-		"Logical_Router_Port": &LogicalRouterPort{},
-		"DHCP_Options":        &DHCPOptions{},
-		"NAT":                 &NAT{},
-		"DNS":                 &DNS{},
-		"ACL":                 &ACL{},
+		"Logical_Switch":              &LogicalSwitch{},
+		"Logical_Switch_Port":         &LogicalSwitchPort{},
+		"Logical_Router":              &LogicalRouter{},
+		"Logical_Router_Port":         &LogicalRouterPort{},
+		"Logical_Router_Static_Route": &StaticRoute{},
+		"DHCP_Options":                &DHCPOptions{},
+		"NAT":                         &NAT{},
+		"DNS":                         &DNS{},
+		"ACL":                         &ACL{},
 	})
 }

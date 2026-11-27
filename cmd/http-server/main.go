@@ -36,6 +36,7 @@ import (
 	"github.com/haioco/vmlet/internal/models"
 	"github.com/haioco/vmlet/internal/monitoring"
 	"github.com/haioco/vmlet/internal/network"
+	"github.com/haioco/vmlet/internal/ovn"
 	"github.com/haioco/vmlet/internal/storage"
 )
 
@@ -8487,12 +8488,12 @@ func (s *HTTPServer) attachPortForwardHandler(w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"message":        "port forward attached",
-		"vm_id":          vmID,
-		"external_ip":    req.ExternalIP,
-		"external_port":  req.ExternalPort,
-		"internal_port":  req.InternalPort,
-		"protocol":       req.Protocol,
+		"message":       "port forward attached",
+		"vm_id":         vmID,
+		"external_ip":   req.ExternalIP,
+		"external_port": req.ExternalPort,
+		"internal_port": req.InternalPort,
+		"protocol":      req.Protocol,
 	})
 }
 
@@ -8577,4 +8578,210 @@ func appendNetworks(s *HTTPServer, net *models.Network) []*models.Network {
 		nets = append(nets, net)
 	}
 	return nets
+}
+
+// setSecurityRulesHandler: PUT /vms/{id}/security-rules
+// Replaces a VM's security group. The allow-only baseline stays; custom rules
+// sit above it by priority, and an Allow=false entry is a deny rule.
+func (s *HTTPServer) setSecurityRulesHandler(w http.ResponseWriter, r *http.Request) {
+	vmID := mux.Vars(r)["id"]
+	vm, ok := s.getVM(vmID)
+	if !ok {
+		http.Error(w, "VM not found", http.StatusNotFound)
+		return
+	}
+
+	var req struct {
+		Rules []models.SecurityRule `json:"rules"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	// Validate before storing, so a bad rule cannot half-apply.
+	if _, err := network.ToOVNRules(req.Rules); err != nil {
+		http.Error(w, fmt.Sprintf("invalid rule: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if s.vmStateStorage != nil {
+		if err := s.vmStateStorage.SaveSecurityRules(vmID, req.Rules); err != nil {
+			http.Error(w, fmt.Sprintf("failed to save rules: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	b := s.ovnFloatingFor()
+	if b == nil {
+		http.Error(w, "security groups require MICROVM_NETWORK_BACKEND=ovn", http.StatusBadRequest)
+		return
+	}
+	if err := b.ApplySecurityRules(vmID, req.Rules); err != nil {
+		http.Error(w, fmt.Sprintf("failed to apply rules: %v", err), http.StatusUnprocessableEntity)
+		return
+	}
+	vm.Network.HasSecurityRules = true
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "security rules applied",
+		"vm_id":   vmID,
+		"rules":   req.Rules,
+	})
+}
+
+// getSecurityRulesHandler: GET /vms/{id}/security-rules
+func (s *HTTPServer) getSecurityRulesHandler(w http.ResponseWriter, r *http.Request) {
+	vmID := mux.Vars(r)["id"]
+	if _, ok := s.getVM(vmID); !ok {
+		http.Error(w, "VM not found", http.StatusNotFound)
+		return
+	}
+	var rules []models.SecurityRule
+	if s.vmStateStorage != nil {
+		loaded, err := s.vmStateStorage.LoadSecurityRules(vmID)
+		if err == nil {
+			rules = loaded
+		}
+	}
+	if rules == nil {
+		rules = []models.SecurityRule{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(rules)
+}
+
+// setNetworkFirewallHandler: PUT /networks/{id}/firewall
+// Network ACLs: stateless rules evaluated for traffic on the VPC's logical
+// switch, before any per-VM security-group rule.
+func (s *HTTPServer) setNetworkFirewallHandler(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	if s.vmStateStorage == nil {
+		http.Error(w, "storage unavailable", http.StatusInternalServerError)
+		return
+	}
+	netRow, err := s.vmStateStorage.LoadNetwork(id)
+	if err != nil {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+	var req struct {
+		Rules []models.SecurityRule `json:"rules"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	if _, err := network.ToOVNRules(req.Rules); err != nil {
+		http.Error(w, fmt.Sprintf("invalid rule: %v", err), http.StatusBadRequest)
+		return
+	}
+	netRow.FirewallRules = req.Rules
+	if err := s.vmStateStorage.SaveNetwork(netRow); err != nil {
+		http.Error(w, fmt.Sprintf("failed to save firewall: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	b := s.ovnFloatingFor()
+	if b == nil {
+		http.Error(w, "network firewall requires MICROVM_NETWORK_BACKEND=ovn", http.StatusBadRequest)
+		return
+	}
+	if err := b.ApplyNetworkFirewall(ovn.VMSwitchName(netRow.Name), req.Rules); err != nil {
+		http.Error(w, fmt.Sprintf("failed to apply firewall: %v", err), http.StatusUnprocessableEntity)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "network firewall applied",
+		"id":      id,
+		"rules":   req.Rules,
+	})
+}
+
+// getNetworkFirewallHandler: GET /networks/{id}/firewall
+func (s *HTTPServer) getNetworkFirewallHandler(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	if s.vmStateStorage == nil {
+		http.Error(w, "storage unavailable", http.StatusInternalServerError)
+		return
+	}
+	netRow, err := s.vmStateStorage.LoadNetwork(id)
+	if err != nil {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+	if netRow.FirewallRules == nil {
+		netRow.FirewallRules = []models.SecurityRule{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(netRow.FirewallRules)
+}
+
+// peerNetworksHandler: POST /networks/{id}/peer
+// Inter-VPC routing: two VPCs' routers exchange routes while keeping separate
+// broadcast domains.
+func (s *HTTPServer) peerNetworksHandler(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	if s.vmStateStorage == nil {
+		http.Error(w, "storage unavailable", http.StatusInternalServerError)
+		return
+	}
+	self, err := s.vmStateStorage.LoadNetwork(id)
+	if err != nil {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+	var req struct {
+		PeerID string `json:"peer_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	if req.PeerID == "" || req.PeerID == id {
+		http.Error(w, "peer_id is required and must differ from this network", http.StatusBadRequest)
+		return
+	}
+	peer, err := s.vmStateStorage.LoadNetwork(req.PeerID)
+	if err != nil {
+		http.Error(w, "peer network not found", http.StatusBadRequest)
+		return
+	}
+	// Refuse overlapping subnets: two identical prefixes make the routes
+	// ambiguous and OVN would silently prefer one.
+	if cidrsOverlap(self.CIDR, peer.CIDR) {
+		http.Error(w, fmt.Sprintf("cannot peer %s and %s: subnets overlap", self.CIDR, peer.CIDR), http.StatusBadRequest)
+		return
+	}
+
+	b := s.ovnFloatingFor()
+	if b == nil {
+		http.Error(w, "peering requires MICROVM_NETWORK_BACKEND=ovn", http.StatusBadRequest)
+		return
+	}
+	if err := b.PeerNetworks(context.Background(), id, req.PeerID); err != nil {
+		http.Error(w, fmt.Sprintf("failed to peer: %v", err), http.StatusUnprocessableEntity)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "networks peered",
+		"id":      id,
+		"peer_id": req.PeerID,
+	})
+}
+
+// cidrsOverlap reports whether two CIDRs share any address.
+func cidrsOverlap(a, b string) bool {
+	_, na, err := net.ParseCIDR(a)
+	if err != nil {
+		return false
+	}
+	_, nb, err := net.ParseCIDR(b)
+	if err != nil {
+		return false
+	}
+	return na.Contains(nb.IP) || nb.Contains(na.IP)
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/haioco/vmlet/internal/models"
 	"github.com/haioco/vmlet/internal/ovn"
 )
 
@@ -201,4 +202,143 @@ func natExternalIPs(rows []ovn.NAT, ip string) bool {
 		}
 	}
 	return false
+}
+
+// TestOVNBackend_LiveSecurityAndNAT exercises security-group rules, network
+// ACLs, port forwarding, SNAT and peering against a real NB DB.
+func TestOVNBackend_LiveSecurityAndNAT(t *testing.T) {
+	nbEndpoint := os.Getenv("MICROVM_OVN_LIVE_NB")
+	if nbEndpoint == "" || os.Getenv("MICROVM_OVN_LIVE_CONFIRM") != "yes" {
+		t.Skip("set MICROVM_OVN_LIVE_NB and MICROVM_OVN_LIVE_CONFIRM=yes to run against a live NB DB")
+	}
+	if os.Getenv("MICROVM_OVN_LIVE_ALLOWWRITE") != "yes" {
+		t.Skip("refusing to mutate a live NB DB without MICROVM_OVN_LIVE_ALLOWWRITE=yes")
+	}
+
+	b := &OVNBackend{
+		config:         &NetworkConfig{BridgeName: "br-int", BridgeCIDR: "10.130.146.0/24"},
+		vmPorts:        map[string]string{},
+		vmFloating:     map[string]map[string]string{},
+		vmMACs:         map[string]string{},
+		vmAddresses:    map[string]string{},
+		vmNetwork:      map[string]string{},
+		vmStaticIP:     map[string]string{},
+		vmPortForwards: map[string][]PortForward{},
+		vmSecRules:     map[string][]models.SecurityRule{},
+	}
+	b.SetNetworks([]*OVNNetwork{{
+		ID: "default", Name: "vm-default", CIDR: "10.130.146.0/24",
+		Gateway: "10.130.146.1", ExternalIP: "203.0.113.1",
+	}})
+	if err := b.Initialize(); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	ctx := context.Background()
+	// Cleanup registered before the first allocation: a half-failed run against
+	// a real database would otherwise leave ports, ACLs and NAT rules behind.
+	t.Cleanup(func() {
+		_ = b.ReleaseVMNetwork("vm-sg-a", "")
+		_ = b.ReleaseVMNetwork("vm-sg-b", "")
+		_ = b.ApplyNetworkFirewall(ovn.VMSwitchName("default"), nil)
+		_ = b.DetachPortForward("vm-sg-a", "203.0.113.1", 8080)
+	})
+
+	if _, err := b.AllocateVMNetwork("vm-sg-a", "02:fc:00:00:00:31", ""); err != nil {
+		t.Fatalf("allocate vm-sg-a: %v", err)
+	}
+	if _, err := b.AllocateVMNetwork("vm-sg-b", "02:fc:00:00:00:32", ""); err != nil {
+		t.Fatalf("allocate vm-sg-b: %v", err)
+	}
+
+	// Security group: a deny for inbound SSH on vm-sg-a only.
+	rules := []models.SecurityRule{{
+		Direction: "ingress", Protocol: "tcp", PortMin: 22, PortMax: 22, Allow: false,
+	}}
+	if err := b.ApplySecurityRules("vm-sg-a", rules); err != nil {
+		t.Fatalf("ApplySecurityRules: %v", err)
+	}
+	acls, err := b.ovnACLs()
+	if err != nil {
+		t.Fatalf("ovnACLs: %v", err)
+	}
+	sawDrop, sawBaseline := false, false
+	for _, a := range acls {
+		if a.ExternalIDs["vmlet-vm"] != "vm-sg-a" {
+			continue
+		}
+		if a.Action == "drop" {
+			sawDrop = true
+		}
+		if a.Action == "allow" {
+			sawBaseline = true
+		}
+	}
+	if !sawDrop {
+		t.Error("custom deny rule was not installed")
+	}
+	if !sawBaseline {
+		t.Error("baseline allow rules were lost when custom rules were applied")
+	}
+	// The neighbour must not inherit the deny.
+	for _, a := range acls {
+		if a.ExternalIDs["vmlet-vm"] == "vm-sg-b" && a.Action == "drop" {
+			t.Error("vm-sg-b inherited vm-sg-a's deny rule")
+		}
+	}
+
+	// Network ACL on the switch.
+	if err := b.ApplyNetworkFirewall(ovn.VMSwitchName("default"), []models.SecurityRule{{
+		Direction: "ingress", Allow: false, Match: "inport == @filterport && ip",
+	}}); err != nil {
+		t.Fatalf("ApplyNetworkFirewall: %v", err)
+	}
+
+	// Port forward.
+	if err := b.AttachPortForward(PortForward{
+		VMID: "vm-sg-a", ExternalIP: "203.0.113.1", ExternalPort: 8080, InternalPort: 80, Protocol: "tcp",
+	}); err != nil {
+		t.Fatalf("AttachPortForward: %v", err)
+	}
+	nats, err := b.ovnNATs()
+	if err != nil {
+		t.Fatalf("ovnNATs: %v", err)
+	}
+	var sawPF, sawSNAT bool
+	for _, n := range nats {
+		if n.ExternalIP == "203.0.113.1:8080" && n.LogicalIP != "" && n.Type == ovn.NATTypeDNAT {
+			sawPF = true
+		}
+		if n.Type == ovn.NATTypeSNAT {
+			sawSNAT = true
+		}
+	}
+	if !sawPF {
+		t.Error("port forward DNAT row missing")
+	}
+	if !sawSNAT {
+		t.Error("outbound SNAT row missing: VMs without a public IP have no path out")
+	}
+	if got := b.ListPortForwards("vm-sg-a"); len(got) != 1 {
+		t.Errorf("ListPortForwards = %d, want 1", len(got))
+	}
+
+	// Peer another VPC.
+	b.SetNetworks([]*OVNNetwork{
+		{ID: "default", Name: "default", CIDR: "10.130.146.0/24", Gateway: "10.130.146.1", ExternalIP: "203.0.113.1"},
+		{ID: "other", Name: "other", CIDR: "10.200.0.0/24", Gateway: "10.200.0.1"},
+	})
+	if err := b.Reconcile(); err != nil {
+		t.Fatalf("Reconcile for peer VPC: %v", err)
+	}
+	if err := b.PeerNetworks(ctx, "default", "other"); err != nil {
+		t.Fatalf("PeerNetworks: %v", err)
+	}
+	routes, err := b.ovnClient().ListStaticRoutes(ctx)
+	if err != nil {
+		t.Fatalf("ListStaticRoutes: %v", err)
+	}
+	if len(routes) == 0 {
+		t.Error("peering installed no routes: the routers can reach each other but not each other's subnets")
+	}
+
 }

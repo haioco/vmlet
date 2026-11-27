@@ -1,6 +1,9 @@
 package ovn
 
-import "strings"
+import (
+	"os"
+	"strings"
+)
 
 // VMSwitchName is the OVN logical switch name carrying a network's VMs.
 // OVN requires names to be DNS-safe, so vmlet derives them from the network
@@ -100,6 +103,16 @@ type VMDefinition struct {
 // network's logical router port; that pair is what routes east-west traffic
 // between two networks. Because both ports are created in one transaction,
 // the peer relationship is atomic.
+// PruneEnvVar opts in to deleting logical switches and routers that are not in
+// the desired set. Off by default; see Topology.Prune for why.
+const PruneEnvVar = "MICROVM_OVN_PRUNE"
+
+// PruneEnabled reports whether the operator opted into pruning topology that is
+// outside this host's desired set.
+func PruneEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv(PruneEnvVar)), "true")
+}
+
 func TopologyFromNetworks(networks []NetworkDefinition) Topology {
 	switches := make([]LogicalSwitchSpec, 0, len(networks)*2)
 	routers := make([]LogicalRouterSpec, 0, len(networks))

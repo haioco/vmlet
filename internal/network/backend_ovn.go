@@ -3,10 +3,12 @@ package network
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"sync"
 
+	"github.com/haioco/vmlet/internal/models"
 	"github.com/haioco/vmlet/internal/ovn"
 	"github.com/haioco/vmlet/internal/ovs"
 )
@@ -23,6 +25,9 @@ type OVNNetwork struct {
 	CIDR       string
 	Gateway    string
 	DNSServers []string
+	// ExternalIP is the address VM traffic is masqueraded to for outbound
+	// internet. Empty disables SNAT for this VPC.
+	ExternalIP string
 }
 
 // PortForward maps an external port on a public IP to an internal port on a VM.
@@ -41,10 +46,11 @@ type OVNBackend struct {
 	ovn            *ovn.Client
 	ovs            *ovs.Client
 	network        string
-	networks       map[string]*OVNNetwork   // network ID -> definition
-	vmNetwork      map[string]string        // vmID -> network ID
-	vmStaticIP     map[string]string        // vmID -> user-requested static IP
-	vmPortForwards map[string][]PortForward // vmID -> port forwards
+	networks       map[string]*OVNNetwork           // network ID -> definition
+	vmNetwork      map[string]string                // vmID -> network ID
+	vmStaticIP     map[string]string                // vmID -> user-requested static IP
+	vmPortForwards map[string][]PortForward         // vmID -> port forwards
+	vmSecRules     map[string][]models.SecurityRule // vmID -> custom ACL rules
 	// vmPorts maps a VM id to the logical port name we created for it, so
 	// release does not have to re-derive (and cannot drift).
 	vmPorts map[string]string
@@ -76,6 +82,7 @@ func NewOVNBackend(config *NetworkConfig) (Backend, error) {
 		vmNetwork:      map[string]string{},
 		vmStaticIP:     map[string]string{},
 		vmPortForwards: map[string][]PortForward{},
+		vmSecRules:     map[string][]models.SecurityRule{},
 	}, nil
 }
 
@@ -103,12 +110,39 @@ func ovnEndpoint() string {
 	return ovn.DefaultNBEndpoint
 }
 
+// PeerNetworks connects two VPCs so their routers exchange routes: a pair of
+// logical router ports, one on each router, with no SNAT, which is how OVN
+// expresses inter-VPC routing (the AWS VPC peering equivalent).
+func (b *OVNBackend) PeerNetworks(ctx context.Context, aID, bID string) error {
+	a := b.networkDef(aID).Name
+	bb := b.networkDef(bID).Name
+	if a == "" || bb == "" {
+		return fmt.Errorf("network: both VPCs must exist to peer them")
+	}
+	if a == bb {
+		return fmt.Errorf("network: cannot peer a VPC with itself")
+	}
+	subnetA, _, _, _, err := b.networkSubnetFor(aID)
+	if err != nil {
+		return err
+	}
+	subnetA2, _, _, _, err := b.networkSubnetFor(bID)
+	if err != nil {
+		return err
+	}
+	_ = subnetA2
+
+	return b.withClient(func(c *ovn.Client) error {
+		_, err := c.PeerRouters(ctx, ovn.GatewayRouterName(a), ovn.GatewayRouterName(bb), subnetA, subnetA2)
+		return err
+	})
+}
+
 // SetNetworks replaces the set of VPCs this backend serves. Called by the
 // manager after it loads networks from storage. A network with an empty ID is
 // treated as the default ("default").
-func (b *OVNBackend) SetNetworks(networks []*OVNNetwork) {
+func (b *OVNBackend) SetNetworks(networks []*OVNNetwork) error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.networks = map[string]*OVNNetwork{}
 	for _, n := range networks {
 		if n == nil {
@@ -130,13 +164,29 @@ func (b *OVNBackend) SetNetworks(networks []*OVNNetwork) {
 		}
 	}
 
-	// Reconcile topology for the new set if we are already connected.
-	if b.ovn != nil {
-		go func() {
-			ctx := context.Background()
-			_ = b.reconcileTopology(ctx)
-		}()
+	connected := b.ovn != nil
+	b.mu.Unlock()
+
+	// Bring the database up to date right away, so a VPC is usable as soon as it
+	// is created rather than at the next restart. reconcileTopology takes its
+	// own read lock, hence the unlock first.
+	if connected {
+		return b.reconcileTopology(context.Background())
 	}
+	return nil
+}
+
+// SetSecurityRules stages a VM's custom security-group rules. The manager calls
+// this before allocation so the rules are re-applied on every boot and survive
+// a restart of this process.
+func (b *OVNBackend) SetSecurityRules(vmID string, rules []models.SecurityRule) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(rules) == 0 {
+		delete(b.vmSecRules, vmID)
+		return
+	}
+	b.vmSecRules[vmID] = rules
 }
 
 // SetStaticIP records a user-requested static IP for a VM. Called before
@@ -208,9 +258,10 @@ func (b *OVNBackend) subnet() (string, string, error) {
 }
 
 // subnetFor returns the CIDR, gateway and DNS servers for a network ID.
-func (b *OVNBackend) subnetFor(networkID string) (string, string, []string, error) {
+func (b *OVNBackend) networkSubnetFor(networkID string) (string, string, []string, string, error) {
 	b.ensureConfig()
 	n := b.networkDef(networkID)
+	externalIP := strings.TrimSpace(n.ExternalIP)
 
 	// For the default network, fall back to the legacy config fields so
 	// existing deployments and tests that set BridgeCIDR/BridgeIP keep working.
@@ -225,19 +276,27 @@ func (b *OVNBackend) subnetFor(networkID string) (string, string, []string, erro
 	if gateway == "" && networkID == "default" {
 		gateway = strings.TrimSpace(b.config.BridgeIP)
 	}
+
 	ip, ipNet, err := ovn.ParseCIDR(cidr)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("network: invalid OVN subnet %q: %w", cidr, err)
+		return "", "", nil, "", fmt.Errorf("network: invalid OVN subnet %q: %w", cidr, err)
 	}
 	if gateway == "" {
 		gateway = ovn.FirstUsable(ipNet).String()
 	}
 	ones, _ := ipNet.Mask.Size()
+
 	dns := n.DNSServers
 	if len(dns) == 0 {
 		dns = []string{"8.8.8.8", "1.1.1.1"}
 	}
-	return fmt.Sprintf("%s/%d", ip.String(), ones), gateway, dns, nil
+	return fmt.Sprintf("%s/%d", ip.String(), ones), gateway, dns, externalIP, nil
+}
+
+// subnetFor is the legacy 3-value form.
+func (b *OVNBackend) subnetFor(networkID string) (string, string, []string, error) {
+	cidr, gw, dns, _, err := b.networkSubnetFor(networkID)
+	return cidr, gw, dns, err
 }
 
 // Initialize connects to the OVN Northbound DB and makes sure the datapath and
@@ -297,8 +356,10 @@ func (b *OVNBackend) reconcileTopology(ctx context.Context) error {
 		})
 	}
 
+	topology := ovn.TopologyFromNetworks(defs)
+	topology.Prune = ovn.PruneEnabled()
 	return b.withClient(func(c *ovn.Client) error {
-		_, err := c.ReconcileTopology(ctx, ovn.TopologyFromNetworks(defs))
+		_, err := c.ReconcileTopology(ctx, topology)
 		return err
 	})
 }
@@ -333,11 +394,10 @@ func (b *OVNBackend) AllocateVMNetwork(vmID, macAddress, networkID string) (*VMN
 		network = networkID
 	}
 
-	subnet, gateway, dns, err := b.subnetFor(networkID)
+	subnet, gateway, dns, externalIP, err := b.networkSubnetFor(networkID)
 	if err != nil {
 		return nil, err
 	}
-	_ = dns
 
 	var ip string
 	err = b.withClient(func(c *ovn.Client) error {
@@ -361,6 +421,13 @@ func (b *OVNBackend) AllocateVMNetwork(vmID, macAddress, networkID string) (*VMN
 		staticIP := b.vmStaticIP[vmID]
 		b.mu.RUnlock()
 		if staticIP != "" {
+			// Validate before using it: an address outside the subnet, or one
+			// another VM already holds, would break this VM's connectivity or
+			// silently take over its neighbour's.
+			inUse := b.allocatedIPs(ctx, c, network)
+			if err := ovn.ValidateSubnetIP(subnet, gateway, staticIP, inUse); err != nil {
+				return fmt.Errorf("network: vm %s static address %s: %w", vmID, staticIP, err)
+			}
 			ip = staticIP
 		} else {
 			ip, err = ovn.AllocateSubnetIP(subnet, b.allocatedIPs(ctx, c, network))
@@ -407,6 +474,38 @@ func (b *OVNBackend) AllocateVMNetwork(vmID, macAddress, networkID string) (*VMN
 		// behaviour the bridge path does not already have.
 		for _, rule := range ovn.DefaultVMRules(ip) {
 			if err := c.EnsureACL(ctx, ovn.VMSwitchName(network), rule, vmID); err != nil {
+				return err
+			}
+		}
+
+		// Staged custom rules: they must be re-installed on every allocation,
+		// not only when the operator POSTs them, or a restart silently drops
+		// a VM's deny rules.
+		b.mu.RLock()
+		custom := b.vmSecRules[vmID]
+		b.mu.RUnlock()
+		if customRules, err := ToOVNRules(custom); err != nil {
+			return err
+		} else {
+			for _, rule := range customRules {
+				if err := c.EnsureACL(ctx, ovn.VMSwitchName(network), rule, vmID); err != nil {
+					return err
+				}
+			}
+		}
+
+		// Outbound masquerade: without this a VM with no public address has no
+		// path to the internet, which is the AWS NAT Gateway / GCP Cloud NAT
+		// role. The whole subnet translates to the VPC's external address.
+		if externalIP != "" {
+			// The desired set must be complete: ReconcileNAT prunes every
+			// vmlet-managed NAT row that is not in it, so passing only the SNAT
+			// rule would delete every VM's floating IP.
+			if _, err := c.ReconcileNAT(ctx, b.floatingSpecs(""), []ovn.SNATRule{{
+				Router:     ovn.GatewayRouterName(network),
+				LogicalIP:  subnet,
+				ExternalIP: externalIP,
+			}}); err != nil {
 				return err
 			}
 		}
@@ -477,8 +576,14 @@ func (b *OVNBackend) ReleaseVMNetwork(vmID, macAddress string) error {
 		}
 		// Reconcile the VMs that remain: the cache still holds this VM's rows
 		// (they are dropped below), so skipping it leaves its NAT rules desired
-		// nowhere and pruned while its neighbours' are kept.
-		if _, err := c.ReconcileNAT(ctx, b.floatingSpecs(vmID), nil); err != nil {
+		// nowhere and pruned while its neighbours' are kept. The SNAT row is
+		// desired independently of any VM and must survive release, so it is
+		// re-derived here rather than passed as an empty set.
+		snatRules, serr := b.snatRules(ctx, c, network)
+		if serr != nil {
+			return serr
+		}
+		if _, err := c.ReconcileNAT(ctx, b.floatingSpecs(vmID), snatRules); err != nil {
 			return err
 		}
 		if err := c.PruneDNSRecords(ctx, map[string]string{}); err != nil {
@@ -493,6 +598,7 @@ func (b *OVNBackend) ReleaseVMNetwork(vmID, macAddress string) error {
 	delete(b.vmAddresses, vmID)
 	delete(b.vmFloating, vmID)
 	delete(b.vmNetwork, vmID)
+	delete(b.vmSecRules, vmID)
 	b.mu.Unlock()
 
 	_ = network
@@ -963,4 +1069,162 @@ func (b *OVNBackend) ListPortForwards(vmID string) []PortForward {
 	out := make([]PortForward, len(b.vmPortForwards[vmID]))
 	copy(out, b.vmPortForwards[vmID])
 	return out
+}
+
+// snatRules re-derives the SNAT rows desired for a network from the current
+// database, so a release reconcile does not drop a VM's outbound masquerade.
+func (b *OVNBackend) snatRules(ctx context.Context, c *ovn.Client, network string) ([]ovn.SNATRule, error) {
+	subnet, _, _, externalIP, err := b.networkSubnetFor(networkNameToID(b, network))
+	if err != nil {
+		return nil, err
+	}
+	if externalIP == "" {
+		return nil, nil
+	}
+	return []ovn.SNATRule{{
+		Router:     ovn.GatewayRouterName(network),
+		LogicalIP:  subnet,
+		ExternalIP: externalIP,
+	}}, nil
+}
+
+// networkNameToID maps a network name back to its ID for config lookup.
+func networkNameToID(b *OVNBackend, name string) string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	for id, n := range b.networks {
+		if n.Name == name {
+			return id
+		}
+	}
+	return "default"
+}
+
+// DetectExternalIP returns the address this host would present to the internet,
+// which is what a VPC's outbound traffic masquerades to. It uses a UDP connect
+// (no packets are sent) to read the kernel's route choice; it returns "" when
+// there is no route out, so callers treat an empty result as "SNAT disabled".
+func DetectExternalIP() string {
+	conn, err := net.Dial("udp", "8.8.8.8:53")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || addr.IP == nil || addr.IP.IsLoopback() {
+		return ""
+	}
+	return addr.IP.String()
+}
+
+// EnsureSNATDefaults fills in the external address for networks that have none,
+// so a VPC created without an explicit one still gets outbound internet.
+func (b *OVNBackend) EnsureSNATDefaults() string {
+	detected := DetectExternalIP()
+	if detected == "" {
+		return ""
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, n := range b.networks {
+		if strings.TrimSpace(n.ExternalIP) == "" {
+			n.ExternalIP = detected
+		}
+	}
+	return detected
+}
+
+// ApplySecurityRules installs a VM's custom security-group rules. The baseline
+// rules are kept: they are the allow-only floor every VM carries, and the
+// custom rules sit above them by priority.
+func (b *OVNBackend) ApplySecurityRules(vmID string, rules []models.SecurityRule) error {
+	if vmID == "" {
+		return fmt.Errorf("network: vm id must not be empty")
+	}
+	ctx := context.Background()
+	if err := b.requireClient(); err != nil {
+		return err
+	}
+
+	b.mu.RLock()
+	networkID := b.vmNetwork[vmID]
+	address := b.vmAddresses[vmID]
+	b.mu.RUnlock()
+	if networkID == "" {
+		networkID = "default"
+	}
+	network := b.networkDef(networkID).Name
+	if network == "" {
+		network = networkID
+	}
+
+	ovnRules, err := ToOVNRules(rules)
+	if err != nil {
+		return err
+	}
+
+	return b.withClient(func(c *ovn.Client) error {
+		// Drop first: this replaces the rule set wholesale, and DropVMACLs is
+		// keyed by this VM's external_ids, so it cannot touch a neighbour's rows.
+		// Installing first would leave rules the caller removed behind.
+		if err := c.DropVMACLs(ctx, vmID); err != nil {
+			return err
+		}
+		// Baseline floor, then the caller's rules.
+		all := ovn.DefaultVMRules(address)
+		all = append(all, ovnRules...)
+		for _, rule := range all {
+			if err := c.EnsureACL(ctx, ovn.VMSwitchName(network), rule, vmID); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// ApplyNetworkFirewall installs the switch-level (network ACL) rule set for a
+// VPC. These are stateless and evaluated for all traffic on the logical switch,
+// so they need no VM id and no address scoping.
+func (b *OVNBackend) ApplyNetworkFirewall(networkName string, rules []models.SecurityRule) error {
+	if networkName == "" {
+		return fmt.Errorf("network: network name is required")
+	}
+	ctx := context.Background()
+	if err := b.requireClient(); err != nil {
+		return err
+	}
+
+	ovnRules, err := ToOVNRules(rules)
+	if err != nil {
+		return err
+	}
+
+	return b.withClient(func(c *ovn.Client) error {
+		if err := c.DropNetworkACLs(ctx, networkName); err != nil {
+			return err
+		}
+		return c.EnsureNetworkACLs(ctx, networkName, ovnRules)
+	})
+}
+
+// ovnClient returns the live Northbound client, for callers that need direct
+// reads (tests, status endpoints). It is nil before Initialize.
+func (b *OVNBackend) ovnClient() *ovn.Client {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.ovn
+}
+
+// Reconcile brings the logical topology in the database up to date with the
+// network set. Safe to call repeatedly. Callers that immediately depend on the
+// topology (peering, or attaching a VM to a just-created VPC) use this rather
+// than assuming SetNetworks already converged.
+func (b *OVNBackend) Reconcile() error {
+	b.mu.RLock()
+	connected := b.ovn != nil
+	b.mu.RUnlock()
+	if !connected {
+		return fmt.Errorf("network: OVN backend is not initialised")
+	}
+	return b.reconcileTopology(context.Background())
 }

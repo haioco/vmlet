@@ -439,9 +439,17 @@ func (m *Manager) CreateMicroVM(ctx context.Context, microvm *models.MicroVMInst
 
 		// For OVN, record the static IP on the backend before allocation so
 		// the allocator uses it instead of auto-assigning.
-		if microvm.Network.AssignmentMethod == models.NetworkModeOVN && staticIP != "" {
+		if microvm.Network.AssignmentMethod == models.NetworkModeOVN {
 			if ovnBackend, ok := m.enhancedNetwork.(*network.OVNBackend); ok && ovnBackend != nil {
-				ovnBackend.SetStaticIP(microvm.ID, staticIP)
+				if staticIP != "" {
+					ovnBackend.SetStaticIP(microvm.ID, staticIP)
+				}
+				// Staged custom rules must be re-applied on every allocation, or
+				// a VM booted before its rules were set would come back up
+				// without them.
+				if len(microvm.Network.SecurityRules) > 0 {
+					ovnBackend.SetSecurityRules(microvm.ID, microvm.Network.SecurityRules)
+				}
 			}
 		}
 

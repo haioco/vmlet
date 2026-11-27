@@ -127,6 +127,8 @@ func (s *SQLiteStorage) initSchema() error {
 		name TEXT NOT NULL,
 		cidr TEXT NOT NULL,
 		gateway TEXT NOT NULL,
+		external_ip TEXT,
+		firewall_rules TEXT,
 		dns_servers TEXT,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	)`)
@@ -136,6 +138,19 @@ func (s *SQLiteStorage) initSchema() error {
 
 	// Add network_id to vms if missing (schema migration)
 	_, _ = s.db.Exec(`ALTER TABLE vms ADD COLUMN network_id TEXT`)
+
+	// Custom security-group rules per VM
+	_, err = s.db.Exec(`
+	CREATE TABLE IF NOT EXISTS vm_security_rules (
+		vm_id TEXT NOT NULL,
+		direction TEXT NOT NULL,
+		priority INTEGER NOT NULL,
+		match_data TEXT NOT NULL,
+		PRIMARY KEY (vm_id, direction, priority, match)
+	)`)
+	if err != nil {
+		return fmt.Errorf("failed to create vm_security_rules table: %w", err)
+	}
 
 	// Create indexes for performance
 	_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_vms_status ON vms(status)`)
@@ -459,9 +474,9 @@ func (s *SQLiteStorage) GetStats() (map[string]interface{}, error) {
 // SaveNetwork creates or updates a network (VPC).
 func (s *SQLiteStorage) SaveNetwork(n *models.Network) error {
 	_, err := s.db.Exec(`
-	INSERT OR REPLACE INTO networks (id, name, cidr, gateway, dns_servers, created_at)
-	VALUES (?, ?, ?, ?, ?, ?)`,
-		n.ID, n.Name, n.CIDR, n.Gateway, joinStrings(n.DNSServers), n.CreatedAt)
+	INSERT OR REPLACE INTO networks (id, name, cidr, gateway, external_ip, firewall_rules, dns_servers, created_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		n.ID, n.Name, n.CIDR, n.Gateway, n.ExternalIP, encodeRules(n.FirewallRules), joinStrings(n.DNSServers), n.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("failed to save network: %w", err)
 	}
@@ -470,7 +485,7 @@ func (s *SQLiteStorage) SaveNetwork(n *models.Network) error {
 
 // LoadNetwork loads a single network by ID.
 func (s *SQLiteStorage) LoadNetwork(id string) (*models.Network, error) {
-	row := s.db.QueryRow(`SELECT id, name, cidr, gateway, dns_servers, created_at FROM networks WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, name, cidr, gateway, external_ip, firewall_rules, dns_servers, created_at FROM networks WHERE id = ?`, id)
 	n, err := scanNetwork(row)
 	if err != nil {
 		return nil, err
@@ -480,7 +495,7 @@ func (s *SQLiteStorage) LoadNetwork(id string) (*models.Network, error) {
 
 // LoadAllNetworks loads every network.
 func (s *SQLiteStorage) LoadAllNetworks() ([]*models.Network, error) {
-	rows, err := s.db.Query(`SELECT id, name, cidr, gateway, dns_servers, created_at FROM networks`)
+	rows, err := s.db.Query(`SELECT id, name, cidr, gateway, external_ip, firewall_rules, dns_servers, created_at FROM networks`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load networks: %w", err)
 	}
@@ -508,10 +523,14 @@ func (s *SQLiteStorage) DeleteNetwork(id string) error {
 // scanNetwork reads a Network from a row scanner.
 func scanNetwork(sc interface{ Scan(...interface{}) error }) (*models.Network, error) {
 	var n models.Network
-	var dns string
+	var dns, externalIP, rulesJSON string
 	var created string
-	if err := sc.Scan(&n.ID, &n.Name, &n.CIDR, &n.Gateway, &dns, &created); err != nil {
+	if err := sc.Scan(&n.ID, &n.Name, &n.CIDR, &n.Gateway, &externalIP, &rulesJSON, &dns, &created); err != nil {
 		return nil, err
+	}
+	n.ExternalIP = externalIP
+	if fw, err := decodeRules(rulesJSON); err == nil {
+		n.FirewallRules = fw
 	}
 	if dns != "" {
 		n.DNSServers = splitStrings(dns)
@@ -541,4 +560,73 @@ func splitStrings(s string) []string {
 		}
 	}
 	return out
+}
+
+// SaveSecurityRules replaces a VM's custom ACL rules. Rules are stored as JSON
+// rows keyed by (vm_id, direction, priority, match) so re-applying is idempotent.
+func (s *SQLiteStorage) SaveSecurityRules(vmID string, rules []models.SecurityRule) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec("DELETE FROM vm_security_rules WHERE vm_id = ?", vmID); err != nil {
+		return err
+	}
+	for _, r := range rules {
+		blob, err := json.Marshal(r)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(
+			"INSERT OR REPLACE INTO vm_security_rules (vm_id, direction, priority, match_data) VALUES (?, ?, ?, ?)",
+			vmID, r.Direction, r.Priority, string(blob)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// LoadSecurityRules returns a VM's custom ACL rules.
+func (s *SQLiteStorage) LoadSecurityRules(vmID string) ([]models.SecurityRule, error) {
+	rows, err := s.db.Query("SELECT match_data FROM vm_security_rules WHERE vm_id = ? ORDER BY priority DESC", vmID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.SecurityRule
+	for rows.Next() {
+		var blob string
+		if err := rows.Scan(&blob); err != nil {
+			return nil, err
+		}
+		var r models.SecurityRule
+		if err := json.Unmarshal([]byte(blob), &r); err != nil {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+func encodeRules(rules []models.SecurityRule) string {
+	if len(rules) == 0 {
+		return ""
+	}
+	blob, err := json.Marshal(rules)
+	if err != nil {
+		return ""
+	}
+	return string(blob)
+}
+
+func decodeRules(blob string) ([]models.SecurityRule, error) {
+	if blob == "" {
+		return nil, nil
+	}
+	var out []models.SecurityRule
+	if err := json.Unmarshal([]byte(blob), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

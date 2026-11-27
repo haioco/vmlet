@@ -65,22 +65,24 @@ type NetworkConfig struct {
 
 // NetworkInfo contains network details for a running microVM
 type NetworkInfo struct {
-	NetworkID        string      `json:"network_id,omitempty"` // VPC/network this VM belongs to
-	IPAddress        string      `json:"ip_address"`
-	IPv6Address      string      `json:"ipv6_address,omitempty"`
-	IPv6Gateway      string      `json:"ipv6_gateway,omitempty"`
-	IPv6PrefixLength int         `json:"ipv6_prefix_length,omitempty"`
-	IPv4NAT          bool        `json:"ipv4_nat,omitempty"`         // Enable IPv4 NAT for IPv6-only VMs
-	IPv4NATAddress   string      `json:"ipv4_nat_address,omitempty"` // Private IPv4 address for NAT
-	MACAddress       string      `json:"mac_address"`
-	AssignmentMethod NetworkMode `json:"assignment_method"`
-	SSHPort          uint32      `json:"ssh_port"`
-	PublicKey        string      `json:"public_key"`
-	TAPDevice        string      `json:"tap_device,omitempty"`        // TAP interface name
-	BridgeName       string      `json:"bridge_name,omitempty"`       // Bridge to attach to (for DHCP mode)
-	BandwidthIngress string      `json:"bandwidth_ingress,omitempty"` // e.g., "80Mibit"
-	BandwidthEgress  string      `json:"bandwidth_egress,omitempty"`  // e.g., "100Mibit"
-	IPv4Addons       []IPv4Addon `json:"ipv4_addons,omitempty"`       // Additional public IPv4 addresses
+	NetworkID        string         `json:"network_id,omitempty"`         // VPC/network this VM belongs to
+	HasSecurityRules bool           `json:"has_security_rules,omitempty"` // whether custom rules are set
+	SecurityRules    []SecurityRule `json:"security_rules,omitempty"`     // staged custom ACL rules
+	IPAddress        string         `json:"ip_address"`
+	IPv6Address      string         `json:"ipv6_address,omitempty"`
+	IPv6Gateway      string         `json:"ipv6_gateway,omitempty"`
+	IPv6PrefixLength int            `json:"ipv6_prefix_length,omitempty"`
+	IPv4NAT          bool           `json:"ipv4_nat,omitempty"`         // Enable IPv4 NAT for IPv6-only VMs
+	IPv4NATAddress   string         `json:"ipv4_nat_address,omitempty"` // Private IPv4 address for NAT
+	MACAddress       string         `json:"mac_address"`
+	AssignmentMethod NetworkMode    `json:"assignment_method"`
+	SSHPort          uint32         `json:"ssh_port"`
+	PublicKey        string         `json:"public_key"`
+	TAPDevice        string         `json:"tap_device,omitempty"`        // TAP interface name
+	BridgeName       string         `json:"bridge_name,omitempty"`       // Bridge to attach to (for DHCP mode)
+	BandwidthIngress string         `json:"bandwidth_ingress,omitempty"` // e.g., "80Mibit"
+	BandwidthEgress  string         `json:"bandwidth_egress,omitempty"`  // e.g., "100Mibit"
+	IPv4Addons       []IPv4Addon    `json:"ipv4_addons,omitempty"`       // Additional public IPv4 addresses
 }
 
 // IPv4Addon represents an additional public IPv4 address assigned to a VM

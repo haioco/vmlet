@@ -108,6 +108,43 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
   Northbound database. The same value form on the NAT drift path would have
   failed to correct a DNAT row's MAC.
 
+### Fixed
+- **`ReconcileTopology` deleted logical switches and routers outside its desired
+  set.** The desired set is only as wide as the networks this process knows
+  about, so a host serving one VPC deleted every other VPC's switch and router,
+  taking that subnet and every VM attached to it down. Pruning is now opt-in via
+  `MICROVM_OVN_PRUNE` (default off) and `Topology.Prune`; `TopologyFromNetworks`
+  does not set it. The port-level prune on a switch we do own is gated the same
+  way, because a VM on another node can share that logical switch. Verified live:
+  re-running with a single-network desired set left the existing topology intact.
+
+### Added
+- Outbound NAT (SNAT) per VPC, so a VM without a public address still has a path
+  to the internet - the AWS NAT Gateway / GCP Cloud NAT role. Masquerades the
+  VPC's whole subnet to `Network.ExternalIP`, which defaults to the host's own
+  address and can be pinned on the network. The desired set passed to
+  `ReconcileNAT` is complete (floating IPs + SNAT) because it prunes anything not
+  listed, and `ReleaseVMNetwork` re-derives the SNAT row so releasing a VM no
+  longer drops the VPC's outbound path.
+- Security groups with allow *and deny* rules: `models.SecurityRule`,
+  `network.ToOVNRules`, and `PUT`/`GET /vms/{id}/security-rules`. Rules persist
+  in a `vm_security_rules` table, are re-staged on every allocation so they
+  survive a restart and a reboot, and sit above the allow-only baseline by
+  priority. Validation rejects an unsupported protocol before storing, so a bad
+  rule cannot half-apply.
+- Network ACLs (stateless, per-VPC): `PUT`/`GET /networks/{id}/firewall`,
+  persisted as JSON on the network row. These are the AWS Network ACL / GCP
+  firewall equivalent and are evaluated for all traffic on the logical switch,
+  before any per-VM rule.
+- VPC peering: `POST /networks/{id}/peer` creates a pair of peered router ports
+  on a stable /31 out of 169.254.0.0/16 plus a static route for each side's
+  whole CIDR, so two VPCs exchange routes while keeping separate broadcast
+  domains. Overlapping subnets are refused, since identical prefixes make the
+  routes ambiguous. Requires `Logical_Router.static_routes`, now modelled.
+- `ovn.ValidateSubnetIP`: a static address must be parseable, inside the subnet,
+  not the gateway, and not already held by another VM - checked inside the
+  allocator, not only at the API edge, so no path can bypass it.
+
 ## [Unreleased]
 
 ### Added

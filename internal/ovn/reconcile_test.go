@@ -133,6 +133,18 @@ func TestReconcileTopology_PrunesUndesiredRows(t *testing.T) {
 			Ports:       []LogicalPortSpec{{Name: "lsp-keep", Addresses: []string{"aa:bb:cc:00:00:01 10.0.0.2"}}},
 		}},
 	}
+
+	// Without the opt-in, a narrow desired set must NOT delete what it does not
+	// serve: the desired set is only as wide as the networks this process knows
+	// about. This is the regression guard for the bug where a host serving one
+	// VPC deleted another VPC's switch and router.
+	if _, err := c.ReconcileTopology(ctx, pruned); err != nil {
+		t.Fatalf("no-prune ReconcileTopology: %v", err)
+	}
+	assertTopologyIntact(t, c)
+
+	// With the opt-in, the old clean-up behaviour still works.
+	pruned.Prune = true
 	result, err := c.ReconcileTopology(ctx, pruned)
 	if err != nil {
 		t.Fatalf("prune ReconcileTopology: %v", err)
@@ -141,6 +153,37 @@ func TestReconcileTopology_PrunesUndesiredRows(t *testing.T) {
 		t.Fatalf("result = %+v, want at least 3 deletions (port, switch, router)", result)
 	}
 	assertTopology(t, c, pruned)
+}
+
+// assertTopologyIntact checks that the rows outside the desired set survived.
+func assertTopologyIntact(t *testing.T, c *Client) {
+	t.Helper()
+	ctx := context.Background()
+	switches, err := c.ListSwitches(ctx)
+	if err != nil {
+		t.Fatalf("ListSwitches: %v", err)
+	}
+	for _, want := range []string{"vm-keep", "vm-drop"} {
+		found := false
+		for _, sw := range switches {
+			if sw.Name == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("switch %q was deleted without the prune opt-in", want)
+		}
+	}
+	routers, err := c.ListRouters(ctx)
+	if err != nil {
+		t.Fatalf("ListRouters: %v", err)
+	}
+	for _, r := range routers {
+		if r.Name == "lr-drop" {
+			return
+		}
+	}
+	t.Error("router lr-drop was deleted without the prune opt-in")
 }
 
 func TestClient_initialState(t *testing.T) {

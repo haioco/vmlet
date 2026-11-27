@@ -73,6 +73,14 @@ type LogicalRouterSpec struct {
 type Topology struct {
 	Switches []LogicalSwitchSpec
 	Routers  []LogicalRouterSpec
+
+	// Prune deletes logical switches and routers that are not in the desired
+	// set. It is opt-in and defaults to false because the desired set is only
+	// as wide as the networks this process knows about: a host that serves one
+	// VPC must not delete another VPC's logical switch and router, which is
+	// what took the whole subnet - and every VM attached to it - down the last
+	// time the set was narrower than the database.
+	Prune bool
 }
 
 // ReconcileResult reports what a single reconcile created or deleted, so
@@ -189,8 +197,13 @@ func (c *Client) ReconcileTopology(ctx context.Context, desired Topology) (*Reco
 			result.Created++
 		}
 
-		// ports currently on this switch that are no longer desired
+		// Ports currently on this switch that are no longer desired. Gated too:
+		// this host's view of a switch can be narrower than the database's when
+		// a VM lives on another node sharing the same logical switch.
 		for _, portName := range sortedNames(portsBySwitch[want.Name]) {
+			if !desired.Prune {
+				break
+			}
 			if _, keep := wantPorts[portName]; !keep {
 				stale := switchByPort[portName]
 				if stale == nil {
@@ -212,7 +225,11 @@ func (c *Client) ReconcileTopology(ctx context.Context, desired Topology) (*Reco
 	}
 
 	// --- switches that are no longer desired ---
+	// Only when the caller opts in: see the Prune field.
 	for i := range currentSwitches {
+		if !desired.Prune {
+			break
+		}
 		if containsSwitch(desired.Switches, currentSwitches[i].Name) {
 			continue
 		}
@@ -277,7 +294,11 @@ func (c *Client) ReconcileTopology(ctx context.Context, desired Topology) (*Reco
 	}
 
 	// --- routers that are no longer desired ---
+	// Gated for the same reason as the switch prune.
 	for i := range currentRouters {
+		if !desired.Prune {
+			break
+		}
 		if containsRouter(desired.Routers, currentRouters[i].Name) {
 			continue
 		}

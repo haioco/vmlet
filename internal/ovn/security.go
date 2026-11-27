@@ -52,6 +52,9 @@ type SecurityRule struct {
 	// MatchExpr overrides the expression Match() derives, for a rule scoped to
 	// a specific port address that Peer cannot express.
 	MatchExpr string
+	// Priority overrides Priority() when non-zero. OVN default is 1000; deny
+	// rules sit above allows so an explicit drop is evaluated first.
+	PriorityValue int
 }
 
 // SecurityRule names. Directions must be OVN's own values: the ACL table's
@@ -116,6 +119,9 @@ func (r SecurityRule) Action() string {
 // Priority is the ACL priority OVN assigns a rule. Deny rules sit above allows
 // so an explicit drop is evaluated first (OVN default is 1000).
 func (r SecurityRule) Priority() int {
+	if r.PriorityValue != 0 {
+		return r.PriorityValue
+	}
 	if r.AllowRule {
 		return 1000
 	}

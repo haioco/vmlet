@@ -812,3 +812,129 @@ func switchForACL(rows []ACL) string {
 	}
 	return ""
 }
+
+// EnsureNetworkACLs installs switch-level ACLs (network ACLs). These carry no
+// vmlet-vm id: they apply to every port on the logical switch.
+func (c *Client) EnsureNetworkACLs(ctx context.Context, switchName string, rules []SecurityRule) error {
+	switches, err := c.switchByName(ctx, switchName)
+	if err != nil {
+		return err
+	}
+	if len(switches) == 0 {
+		return fmt.Errorf("ovn: logical switch %q does not exist", switchName)
+	}
+	if len(rules) == 0 {
+		return nil
+	}
+
+	for _, rule := range rules {
+		existing, err := c.aclBy(ctx, switchName, rule.Priority(), rule.Direction, rule.Match(), "")
+		if err != nil {
+			return err
+		}
+		if len(existing) > 0 {
+			continue
+		}
+		row := &ACL{
+			UUID:        namedRef("nacl", fmt.Sprintf("%s-%d-%s-%s", switchName, rule.Priority(), rule.Direction, rule.Match())),
+			Action:      rule.Action(),
+			Direction:   rule.Direction,
+			Priority:    rule.Priority(),
+			Match:       rule.Match(),
+			ExternalIDs: aclExternalIDs("net", "", switchName),
+		}
+		if rule.Loggable() {
+			row.Log = true
+		}
+		ops, err := c.api.Create(row)
+		if err != nil {
+			return fmt.Errorf("ovn: cannot build create op for network ACL on %q: %w", switchName, err)
+		}
+		aclRef := row.UUID
+		refOps, err := mutateSwitchACL(c.api, switches[0].UUID, ovsdb.MutateOperationInsert, aclRef)
+		if err != nil {
+			return err
+		}
+		ops = append(ops, refOps...)
+		if err := c.transact(ctx, ops, fmt.Sprintf("create network ACL on %q", switchName)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DropNetworkACLs removes every vmlet-managed network ACL from a switch.
+func (c *Client) DropNetworkACLs(ctx context.Context, switchName string) error {
+	rows, err := c.ListACLs(ctx)
+	if err != nil {
+		return err
+	}
+	switches, err := c.switchByName(ctx, switchName)
+	if err != nil {
+		return err
+	}
+
+	var ops []ovsdb.Operation
+	for i := range rows {
+		row := rows[i]
+		// Only vmlet-managed ACLs with an empty vm id are network ACLs.
+		if row.ExternalIDs["vmlet-managed"] != "true" || row.ExternalIDs["vmlet-vm"] != "" {
+			continue
+		}
+		if row.ExternalIDs["vmlet-switch"] != switchName {
+			continue
+		}
+		if len(switches) > 0 && containsString(switches[0].ACLs, row.UUID) {
+			refOps, err := mutateSwitchACL(c.api, switches[0].UUID, ovsdb.MutateOperationDelete, row.UUID)
+			if err != nil {
+				return err
+			}
+			ops = append(ops, refOps...)
+		}
+		delOps, err := c.api.Where(&row).Delete()
+		if err != nil {
+			return err
+		}
+		ops = append(ops, delOps...)
+	}
+	if len(ops) == 0 {
+		return nil
+	}
+	return c.transact(ctx, ops, "drop network ACLs")
+}
+
+// mutateRouterPortsAdd adds a router port UUID to a router's ports set.
+func mutateRouterPortsAdd(api client.API, routerUUID string, portUUID string) ([]ovsdb.Operation, error) {
+	target := &LogicalRouter{}
+	ops, err := api.WhereAll(target, model.Condition{
+		Field:    &target.UUID,
+		Function: ovsdb.ConditionEqual,
+		Value:    routerUUID,
+	}).Mutate(target, model.Mutation{
+		Field:   &target.Ports,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{portUUID},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ovn: cannot build router port reference op: %w", err)
+	}
+	return ops, nil
+}
+
+// mutateRouterStaticRoutesAdd adds a static route UUID to a router's routes set.
+func mutateRouterStaticRoutesAdd(api client.API, routerUUID string, routeUUID string) ([]ovsdb.Operation, error) {
+	target := &LogicalRouter{}
+	ops, err := api.WhereAll(target, model.Condition{
+		Field:    &target.UUID,
+		Function: ovsdb.ConditionEqual,
+		Value:    routerUUID,
+	}).Mutate(target, model.Mutation{
+		Field:   &target.StaticRoutes,
+		Mutator: ovsdb.MutateOperationInsert,
+		Value:   []string{routeUUID},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ovn: cannot build static route reference op: %w", err)
+	}
+	return ops, nil
+}
