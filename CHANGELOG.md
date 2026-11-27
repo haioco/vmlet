@@ -99,6 +99,15 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
   an address. Drop rules need a security-group model the VM state does not have.
 - `SecurityRule.MatchExpr` for rules scoped to a specific port address.
 
+### Fixed
+- `EnsureDHCPOptions` passed a value where libovsdb needs a pointer when
+  building the update op for an existing `DHCP_Options` row, so `AllocateVMNetwork` failed on
+  any host whose DHCP row already existed with different options - which is every
+  host provisioned by `scripts/setup-ovn-host.sh`, since it writes Google DNS and
+  vmlet derives Cloudflare's. Found by running the VM path against a live
+  Northbound database. The same value form on the NAT drift path would have
+  failed to correct a DNAT row's MAC.
+
 ## [Unreleased]
 
 ### Added

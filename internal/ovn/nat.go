@@ -145,7 +145,7 @@ func (c *Client) ReconcileNAT(ctx context.Context, floating []FloatingIP, snats 
 		}
 		updated := f.toNAT(vmIDFor(f))
 		updated.UUID = existing.UUID
-		updateOps, err := c.api.Where(existing).Update(updated, &updated.ExternalMAC)
+		updateOps, err := c.api.Where(&existing).Update(updated, &updated.ExternalMAC)
 		if err != nil {
 			return nil, fmt.Errorf("ovn: cannot build update op for NAT %s: %w", f.ExternalIP, err)
 		}

@@ -199,7 +199,7 @@ func (c *Client) EnsureDHCPOptions(ctx context.Context, spec DHCPSpec, network s
 		Options:     options,
 		ExternalIDs: externalIDs,
 	}
-	ops, err := c.api.Where(existing).Update(row, &row.Options, &row.ExternalIDs)
+	ops, err := c.api.Where(&existing).Update(row, &row.Options, &row.ExternalIDs)
 	if err != nil {
 		return "", fmt.Errorf("ovn: cannot build update op for DHCP_Options %q: %w", cidr, err)
 	}
