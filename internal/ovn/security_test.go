@@ -2,6 +2,7 @@ package ovn
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/ovn-org/libovsdb/ovsdb"
@@ -363,4 +364,47 @@ func aclFromRow(c *Client, row ovsdb.Row) (ACL, error) {
 		return acl, err
 	}
 	return acl, nil
+}
+
+func TestDefaultVMRulesDistinctPerVM(t *testing.T) {
+	a := DefaultVMRules("10.0.0.10")
+	b := DefaultVMRules("10.0.0.11")
+
+	if len(a) == 0 || len(b) == 0 {
+		t.Fatalf("DefaultVMRules returned %d and %d rules, want a baseline for both", len(a), len(b))
+	}
+	for i := range a {
+		if a[i].Match() == b[i].Match() {
+			t.Errorf("rule %d has the same match %q for both VMs; ACLs are a switch-wide resource, so a shared match converges two VMs onto one row", i, a[i].Match())
+		}
+	}
+}
+
+func TestDefaultVMRulesIsAllowOnlyAndScoped(t *testing.T) {
+	rules := DefaultVMRules("10.0.0.10")
+
+	for _, r := range rules {
+		if !r.AllowRule {
+			t.Errorf("rule %q is a drop; the bridge backend installs no deny rule, and a drop here would also drop this VM's DHCP discovery (source 0.0.0.0)", r.Match())
+		}
+		if r.Loggable() {
+			t.Errorf("rule %q is marked loggable, which should only be true for drops", r.Match())
+		}
+		if r.Priority() != 1000 {
+			t.Errorf("rule %q priority = %d, want 1000", r.Match(), r.Priority())
+		}
+	}
+
+	// The address binding is what keeps one VM's rows from another's.
+	for _, r := range rules {
+		if !strings.Contains(r.Match(), "10.0.0.10") {
+			t.Errorf("match %q is not scoped to the VM's address", r.Match())
+		}
+	}
+}
+
+func TestDefaultVMRulesEmptyAddress(t *testing.T) {
+	if got := DefaultVMRules(""); got != nil {
+		t.Errorf("DefaultVMRules(\"\") = %v, want nil: an unaddressed port cannot be scoped", got)
+	}
 }

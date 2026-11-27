@@ -49,6 +49,9 @@ type SecurityRule struct {
 	Peer string
 	// AllowRule drops the traffic when false (a "deny" rule).
 	AllowRule bool
+	// MatchExpr overrides the expression Match() derives, for a rule scoped to
+	// a specific port address that Peer cannot express.
+	MatchExpr string
 }
 
 // SecurityRule names. Directions must be OVN's own values: the ACL table's
@@ -72,6 +75,9 @@ type SecurityGroup struct {
 // so one ACL row can express the rule. OVN ACLs on a logical switch use the
 // reserved "filterport" address set to mean "the port the ACL is bound to".
 func (r SecurityRule) Match() string {
+	if r.MatchExpr != "" {
+		return r.MatchExpr
+	}
 	direction := "inport"
 	if r.Direction == DirectionEgress {
 		direction = "outport"
@@ -179,5 +185,37 @@ func envFlagValue(value string) *bool {
 		return &disabled
 	default:
 		return nil
+	}
+}
+
+// DefaultVMRules is the baseline ACL set every VM port carries on the OVN
+// backend. Both rules are scoped to the VM's own address, which is what keeps
+// one VM's rows distinct from its neighbours': ACLs live on the logical switch
+// and are shared by every port on it, so a match that is identical across VMs
+// would make EnsureACL converge them onto a single row and DropVMACLs free it
+// out from under the others.
+//
+// The rules are deliberately allow-only. OVN applies no implicit deny, so this
+// baseline is behaviour-identical to bridge mode, where the ebtables rules are
+// "allow ARP, then drop a foreign source MAC" - anti-spoofing, not a firewall.
+// That drop half belongs to port_security on the logical port, which OVN
+// enforces in the datapath before the ACL pipeline; restating it here would
+// also drop the VM's own DHCP discovery, whose source address is 0.0.0.0 until
+// it has been offered one.
+func DefaultVMRules(ipv4 string) []SecurityRule {
+	if ipv4 == "" {
+		return nil
+	}
+	return []SecurityRule{
+		{
+			Direction: DirectionIngress,
+			AllowRule: true,
+			MatchExpr: fmt.Sprintf("inport == @filterport && ip4.dst == %s", ipv4),
+		},
+		{
+			Direction: DirectionEgress,
+			AllowRule: true,
+			MatchExpr: fmt.Sprintf("outport == @filterport && ip4.src == %s", ipv4),
+		},
 	}
 }

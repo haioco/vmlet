@@ -71,9 +71,9 @@ keeping the current bridge backend as a supported fallback.
 | 1.3 | **OVS datapath wiring** | `br-int` integration bridge; Firecracker TAP devices attached as OVS ports with `iface-id` = logical port name. Host setup script + systemd units (`ovn-controller`, `ovsdb-server`, `ovn-northd`). |
 | 1.4 | **Logical switch per network / tenant** | One logical switch per VM network; logical router for inter-network + external traffic; provider/external bridge mapping for uplink. |
 | 1.5 | **Native DHCP & DNS** | OVN `DHCP_Options` per subnet; static reservations keyed by MAC; replaces dnsmasq hosts files. Cloud-init static config path stays as fallback. |
-| 1.6 | **Security groups via ACLs** | Port security (MAC/IP anti-spoof) + stateful ACLs per VM; API-compatible with existing anti-spoof toggles (`MICROVM_ANTISPOOF_*`). |
+| 1.6 | **Security groups via ACLs** | Port security (MAC/IP anti-spoof) + stateful ACLs per VM; API-compatible with existing anti-spoof toggles (`MICROVM_ANTISPOOF_*`). Port security and the per-VM ACL baseline are in place; per-group **deny** rules are not, as they need a security-group model the VM state does not have yet. |
 | 1.7 | **QoS via OVS** | Map existing bandwidth ingress/egress limits to OVS QoS queues/policing instead of `tc`. |
-| 1.8 | **Floating IPs / distributed NAT** | DNAT/SNAT logical router policies backing the `/vms/{id}/ipv4` addon endpoints; gateway HA later. |
+| 1.8 | **Floating IPs / distributed NAT** | DNAT rules on the logical router, exposed as `POST` / `GET` / `DELETE /vms/{id}/floating-ip`. The host-level `/vms/{id}/ipv4` addons stay **bridge-only by design**: they configure macvlan plus a routing table for OVH-assigned failover IPs, which is physical-hosting work the overlay has no equivalent for. SNAT for overlay-originated traffic and gateway HA come later. |
 | 1.9 | **Migration & compatibility** | Bridge→OVN migration tool for existing VMs; mixed-mode operation during rollout; e2e tests (create/connect/migrate/snapshot with OVN). |
 | 1.10 | **Docs & operator guide** | `docs/OVN.md`: architecture diagram, host prerequisites, tuning (MTU/Geneve), troubleshooting (`ovn-trace`, `ovs-ofctl`). |
 

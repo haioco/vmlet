@@ -252,7 +252,20 @@ func (b *OVNBackend) AllocateVMNetwork(vmID, macAddress string) (*VMNetworkInfo,
 		}
 
 		// Anti-spoofing, honouring the same switches as the bridge backend.
-		return c.EnsurePortSecurity(ctx, ovn.LogicalPortName(vmID), ovn.PortSecurityFor(macAddress, ip))
+		if err := c.EnsurePortSecurity(ctx, ovn.LogicalPortName(vmID), ovn.PortSecurityFor(macAddress, ip)); err != nil {
+			return err
+		}
+
+		// Security group ACLs. These are the OVN replacement for the ebtables
+		// rules the bridge backend installs per TAP; the default set is
+		// allow-only and scoped to the VM's own address, so it adds no deny
+		// behaviour the bridge path does not already have.
+		for _, rule := range ovn.DefaultVMRules(ip) {
+			if err := c.EnsureACL(ctx, ovn.VMSwitchName(network), rule, vmID); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -308,7 +321,10 @@ func (b *OVNBackend) ReleaseVMNetwork(vmID, macAddress string) error {
 		if err := c.DropVMACLs(ctx, vmID); err != nil {
 			return err
 		}
-		if _, err := c.ReconcileNAT(ctx, nil, nil); err != nil {
+		// Reconcile the VMs that remain: the cache still holds this VM's rows
+		// (they are dropped below), so skipping it leaves its NAT rules desired
+		// nowhere and pruned while its neighbours' are kept.
+		if _, err := c.ReconcileNAT(ctx, b.floatingSpecs(vmID), nil); err != nil {
 			return err
 		}
 		if err := c.PruneDNSRecords(ctx, map[string]string{}); err != nil {
@@ -522,26 +538,25 @@ func (b *OVNBackend) AttachFloatingIP(vmID, externalIP string) error {
 	}
 	ctx := context.Background()
 
-	internalIP, mac, err := b.vmEndpoint(ctx, vmID)
+	internalIP, _, err := b.vmEndpoint(ctx, vmID)
 	if err != nil {
 		return err
 	}
 
-	err = b.withClient(func(c *ovn.Client) error {
-		_, err := c.ReconcileNAT(ctx, b.floatingSpecs(internalIP, mac), nil)
-		return err
-	})
-	if err != nil {
-		return err
-	}
-
+	// Record before reconciling. The desired set is derived from this cache,
+	// so recording afterwards would reconcile to the previous state and leave
+	// the new address unmapped - and, worse, prune the rows that already exist.
 	b.mu.Lock()
 	if b.vmFloating[vmID] == nil {
 		b.vmFloating[vmID] = map[string]string{}
 	}
 	b.vmFloating[vmID][externalIP] = internalIP
 	b.mu.Unlock()
-	return nil
+
+	return b.withClient(func(c *ovn.Client) error {
+		_, err := c.ReconcileNAT(ctx, b.floatingSpecs(""), nil)
+		return err
+	})
 }
 
 // DetachFloatingIP withdraws a public address from a VM. Idempotent: detaching
@@ -575,7 +590,7 @@ func (b *OVNBackend) DetachFloatingIP(vmID, externalIP string) error {
 	}
 
 	return b.withClient(func(c *ovn.Client) error {
-		_, err := c.ReconcileNAT(ctx, b.floatingSpecs("", ""), nil)
+		_, err := c.ReconcileNAT(ctx, b.floatingSpecs(""), nil)
 		return err
 	})
 }
@@ -637,18 +652,47 @@ func (b *OVNBackend) vmEndpoint(ctx context.Context, vmID string) (string, strin
 	if ip == "" || mac == "" {
 		return "", "", fmt.Errorf("network: vm %s has no address yet", vmID)
 	}
+
+	// Cache what the database told us. floatingSpecs derives each DNAT row's MAC
+	// from this map, so a restart that reads the address from OVN but does not
+	// remember it would silently omit the row.
+	b.mu.Lock()
+	if b.vmMACs[vmID] == "" {
+		b.vmMACs[vmID] = mac
+	}
+	if b.vmAddresses[vmID] == "" {
+		b.vmAddresses[vmID] = ip
+	}
+	b.mu.Unlock()
+
 	return ip, mac, nil
 }
 
 // floatingSpecs builds the DNAT set for every address this host has mapped,
 // which is what ReconcileNAT diffs against to add and prune.
-func (b *OVNBackend) floatingSpecs(internalIP, mac string) []ovn.FloatingIP {
+//
+// Each row carries the MAC and private address of the VM it targets. The rows
+// share one logical router, but they are per-VM resources, and one shared MAC
+// would have OVN answer ARP for the external address with the wrong guest's
+// hardware address.
+//
+// skipVMID omits one VM's addresses: releasing a VM must reconcile the VMs that
+// remain rather than flush the router, or every other VM's public address goes
+// with it.
+func (b *OVNBackend) floatingSpecs(skipVMID string) []ovn.FloatingIP {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
 	router := ovn.GatewayRouterName(b.networkName())
 	var out []ovn.FloatingIP
-	for _, addrs := range b.vmFloating {
+	for vmID, addrs := range b.vmFloating {
+		if vmID == skipVMID {
+			continue
+		}
+		mac := b.vmMACs[vmID]
+		if mac == "" {
+			continue
+		}
 		for pub, priv := range addrs {
 			if pub == "" || priv == "" {
 				continue

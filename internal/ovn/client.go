@@ -374,14 +374,14 @@ func (c *Client) EnsureACL(ctx context.Context, switchName string, rule Security
 	match := rule.Match()
 	externalIDs := aclExternalIDs("", vmID, switchName)
 
-	current, err := c.aclBy(ctx, switchName, priority, direction, match)
+	current, err := c.aclBy(ctx, switchName, priority, direction, match, vmID)
 	if err != nil {
 		return err
 	}
 
 	if len(current) == 0 {
 		row := &ACL{
-			UUID:        namedRef("acl", fmt.Sprintf("%s-%d-%s", switchName, priority, direction)),
+			UUID:        namedRef("acl", fmt.Sprintf("%s-%s-%d-%s", switchName, vmID, priority, direction)),
 			Action:      action,
 			Direction:   direction,
 			Priority:    priority,
@@ -507,13 +507,18 @@ func (c *Client) ListACLs(ctx context.Context) ([]ACL, error) {
 	return rows, nil
 }
 
-func (c *Client) aclBy(ctx context.Context, switchName string, priority int, direction, match string) ([]ACL, error) {
+// aclBy finds this VM's ACL rows matching (priority, direction, match) on one
+// switch. The VM is part of the key, not a detail: ACLs are a switch-level
+// resource, so without it a VM's ensure would adopt a neighbour's row and
+// rewrite its external_ids, leaving the row owned by whoever reconciled last.
+func (c *Client) aclBy(ctx context.Context, switchName string, priority int, direction, match, vmID string) ([]ACL, error) {
 	rows := []ACL{}
 	if err := c.api.WhereCache(func(r *ACL) bool {
 		return r.Priority == priority &&
 			r.Match == match &&
 			r.Direction == direction &&
-			r.ExternalIDs["vmlet-switch"] == switchName
+			r.ExternalIDs["vmlet-switch"] == switchName &&
+			r.ExternalIDs["vmlet-vm"] == vmID
 	}).List(ctx, &rows); err != nil {
 		return nil, fmt.Errorf("ovn: lookup of ACL on %q: %w", switchName, err)
 	}

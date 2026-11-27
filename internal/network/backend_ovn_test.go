@@ -177,11 +177,11 @@ func TestOVNBackend_FloatingSpecsUseOVNNames(t *testing.T) {
 		network:     "alpha",
 		vmPorts:     map[string]string{},
 		vmFloating:  map[string]map[string]string{"vm-1": {"1.2.3.4": "10.0.0.10"}},
-		vmMACs:      map[string]string{},
+		vmMACs:      map[string]string{"vm-1": "aa:bb:cc:dd:ee:01"},
 		vmAddresses: map[string]string{},
 	}
 
-	specs := b.floatingSpecs("", "")
+	specs := b.floatingSpecs("")
 	if len(specs) != 1 {
 		t.Fatalf("specs = %d, want 1", len(specs))
 	}
@@ -204,5 +204,58 @@ func TestOVNBackend_ListFloatingIsACopy(t *testing.T) {
 	got["mutated"] = "x"
 	if _, leaked := b.vmFloating["vm-1"]["mutated"]; leaked {
 		t.Error("ListFloatingIPs handed out its internal map")
+	}
+}
+
+func TestOVNBackend_FloatingSpecsSkipAndMacPerVM(t *testing.T) {
+	b := &OVNBackend{
+		config:  &NetworkConfig{BridgeName: "br-int", BridgeCIDR: "10.0.0.0/24"},
+		network: "alpha",
+		vmPorts: map[string]string{}, vmFloating: map[string]map[string]string{}, vmMACs: map[string]string{}, vmAddresses: map[string]string{},
+	}
+	b.vmFloating["vm-1"] = map[string]string{"1.2.3.4": "10.0.0.10"}
+	b.vmFloating["vm-2"] = map[string]string{"5.6.7.8": "10.0.0.11"}
+	b.vmMACs["vm-1"] = "aa:bb:cc:dd:ee:01"
+	b.vmMACs["vm-2"] = "aa:bb:cc:dd:ee:02"
+
+	got := b.floatingSpecs("")
+	if len(got) != 2 {
+		t.Fatalf("specs = %d, want 2", len(got))
+	}
+	for _, spec := range got {
+		// Each row must carry the MAC of the VM it targets: they share one
+		// router, and a shared MAC answers ARP for the wrong guest.
+		want := "10.0.0.10"
+		if spec.ExternalIP == "5.6.7.8" {
+			want = "10.0.0.11"
+		}
+		if spec.InternalIP != want {
+			t.Errorf("external %q targets %q, want %q", spec.ExternalIP, spec.InternalIP, want)
+		}
+		wantMAC := "aa:bb:cc:dd:ee:01"
+		if want == "10.0.0.11" {
+			wantMAC = "aa:bb:cc:dd:ee:02"
+		}
+		if spec.MAC != wantMAC {
+			t.Errorf("external %q carries MAC %q, want %q", spec.ExternalIP, spec.MAC, wantMAC)
+		}
+	}
+
+	// Release reconciles the remaining VMs, not an empty set: flushing the
+	// router would take every other VM's public address with it.
+	kept := b.floatingSpecs("vm-1")
+	if len(kept) != 1 || kept[0].ExternalIP != "5.6.7.8" {
+		t.Errorf("reconcile skipping vm-1 = %+v, want only 5.6.7.8", kept)
+	}
+}
+
+func TestOVNBackend_FloatingSpecsNeedsCachedMAC(t *testing.T) {
+	b := &OVNBackend{
+		config: &NetworkConfig{BridgeName: "br-int", BridgeCIDR: "10.0.0.0/24"}, network: "alpha",
+		vmPorts: map[string]string{}, vmFloating: map[string]map[string]string{}, vmMACs: map[string]string{}, vmAddresses: map[string]string{},
+	}
+	b.vmFloating["vm-1"] = map[string]string{"1.2.3.4": "10.0.0.10"}
+	if got := b.floatingSpecs(""); len(got) != 0 {
+		t.Errorf("a VM with no cached MAC produced %d specs; the row would answer ARP with nothing", len(got))
 	}
 }

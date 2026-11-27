@@ -67,6 +67,38 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
   `DELETE /vms/{id}/floating-ip/{address}`, which answer 400 on a non-OVN
   backend and 404 for an unknown VM.
 
+### Fixed
+- Three per-VM ownership bugs on OVN resources that are shared host-wide. Each
+  resource (ACL rows, NAT rows) lives on a switch or router rather than on a
+  port, so code that derived the desired state from a cache in the wrong order,
+  or from a key that omitted the VM, let one VM's reconcile overwrite or free
+  another's:
+  - `AttachFloatingIP` recorded the new address *after* reconciling, so it always
+    reconciled to the previous state - the DNAT row was never created, and any
+    existing rows were pruned. It now records first.
+  - `EnsureACL` keyed its row on `(switch, priority, direction, match)` with a
+    deterministic UUID, so two VMs with the same rule converged onto one row: the
+    second VM rewrote its external_ids, and releasing whichever VM held it last
+    freed a rule its neighbours relied on. The VM is now part of both the row
+    name and the lookup key.
+  - `ReleaseVMNetwork` called `ReconcileNAT(nil, nil)`, flushing every NAT row on
+    the router: releasing one VM silently removed every other VM's public address.
+    It now reconciles the VMs that remain.
+- `floatingSpecs` stamped one MAC onto every DNAT row; each row now carries the
+  MAC of the VM it targets, or OVN answers ARP for the external address with the
+  wrong guest.
+- `vmEndpoint` no longer returns an address read from OVN without caching it, so
+  a restart can still build a DNAT row (the MAC comes from that cache).
+
+### Added
+- Security-group ACLs are wired to the VM lifecycle: `ovn.DefaultVMRules` builds
+  the baseline rule set and `AllocateVMNetwork` installs it, completing item
+  1.6. The baseline is allow-only and scoped to the VM's own address - bridge
+  mode installs no deny rule either, and restating its anti-spoof drop here would
+  drop the VM's own DHCP discovery, whose source is `0.0.0.0` until it is offered
+  an address. Drop rules need a security-group model the VM state does not have.
+- `SecurityRule.MatchExpr` for rules scoped to a specific port address.
+
 ## [Unreleased]
 
 ### Added
