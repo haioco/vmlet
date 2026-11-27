@@ -146,7 +146,7 @@ func (s *SQLiteStorage) initSchema() error {
 		direction TEXT NOT NULL,
 		priority INTEGER NOT NULL,
 		match_data TEXT NOT NULL,
-		PRIMARY KEY (vm_id, direction, priority, match)
+		PRIMARY KEY (vm_id, direction, priority, match_data)
 	)`)
 	if err != nil {
 		return fmt.Errorf("failed to create vm_security_rules table: %w", err)
