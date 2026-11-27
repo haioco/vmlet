@@ -119,7 +119,7 @@ func TestNetworkManagerIntegration(t *testing.T) {
 	testMicrovmID := uuid.New().String()
 
 	t.Run("ConfigureNATNetwork", func(t *testing.T) {
-		networkInfo, err := networkManager.ConfigureNetwork(ctx, testMicrovmID, models.NetworkModeNAT, "")
+		networkInfo, err := networkManager.ConfigureNetwork(ctx, testMicrovmID, models.NetworkModeNAT, "", "", "", "", "", 0, "")
 		if err != nil {
 			t.Errorf("Failed to configure NAT network: %v", err)
 			return

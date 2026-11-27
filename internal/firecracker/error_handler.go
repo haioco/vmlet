@@ -413,38 +413,21 @@ func (eh *ErrorHandler) recoverFromBootError(ctx context.Context, microvmID stri
 	return fmt.Errorf("boot recovery not yet implemented: %w", err)
 }
 
-// recoverFromNetworkInterfaceError attempts to recover from network interface creation failures
+// recoverFromNetworkInterfaceError attempts to recover from network interface
+// creation failures.
+//
+// The previous implementation of this function deleted and recreated an
+// interface named tap<hash>, which is not the interface the caller asked for.
+// That "recovery" turned a loud, correct failure into a silent misconfiguration:
+// it produced a second, unbound TAP that the rest of creation then happily used,
+// so an OVN VM booted on the wrong bridge with no overlay in the packet path.
+// Deleting something and creating something else is not recovery, so this now
+// only removes state that is provably ours to remove and otherwise reports the
+// original cause unchanged.
 func (eh *ErrorHandler) recoverFromNetworkInterfaceError(ctx context.Context, microvmID string, err error) error {
-	errorMsg := err.Error()
-
-	// Handle TAP interface creation failures
-	if containsSubstring(errorMsg, "tap") || containsSubstring(errorMsg, "interface") {
-		// Try to clean up any existing TAP interface
-		tapName := fmt.Sprintf("tap%d", hashString(microvmID)%1000)
-		if cleanupErr := executeCommand("sudo", "ip", "link", "delete", tapName); cleanupErr == nil {
-			// Wait a moment for cleanup to complete
-			time.Sleep(1 * time.Second)
-
-			// Try to recreate the interface
-			if createErr := executeCommand("sudo", "ip", "tuntap", "add", "dev", tapName, "mode", "tap"); createErr == nil {
-				if upErr := executeCommand("sudo", "ip", "link", "set", "dev", tapName, "up"); upErr == nil {
-					return nil // Successfully recovered
-				}
-			}
-		}
-	}
-
-	// Handle bridge attachment failures
-	if containsSubstring(errorMsg, "bridge") {
-		// Try to ensure bridge exists and retry attachment
-		bridgeName := "fc-br0"
-		if bridgeErr := eh.ensureBridgeExists(bridgeName); bridgeErr == nil {
-			// Retry the original operation after ensuring bridge exists
-			return nil
-		}
-	}
-
-	return fmt.Errorf("network interface recovery failed: %w", err)
+	// The generated name is deliberately NOT used: it is not a TAP the caller
+	// asked for, so creating one cannot be a recovery step for it.
+	return fmt.Errorf("network interface setup failed for VM %s: %w", microvmID, err)
 }
 
 // recoverFromCleanupError attempts to recover from cleanup failures

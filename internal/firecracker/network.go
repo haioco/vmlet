@@ -91,7 +91,7 @@ func (nm *NetworkManager) configureNATNetwork(ctx context.Context, microvmID str
 	macAddr := nm.generateMACAddress(microvmID)
 
 	// Create TAP interface
-	tapName := fmt.Sprintf("fc-tap-%s", truncateVMID(microvmID, 8))
+	tapName := ovnTAPName(microvmID)
 	if err := nm.createTAPInterface(tapName); err != nil {
 		return nil, fmt.Errorf("failed to create TAP interface: %w", err)
 	}
@@ -657,7 +657,7 @@ func (nm *NetworkManager) configureOVNNetwork(ctx context.Context, microvmID, ne
 	macAddr := nm.generateMACAddress(microvmID)
 
 	// Create TAP interface
-	tapName := fmt.Sprintf("fc-tap-%s", truncateVMID(microvmID, 8))
+	tapName := ovnTAPName(microvmID)
 	if err := nm.createTAPInterface(tapName); err != nil {
 		return nil, fmt.Errorf("failed to create TAP interface: %w", err)
 	}
@@ -706,7 +706,7 @@ func (nm *NetworkManager) configureOVNNetwork(ctx context.Context, microvmID, ne
 func (nm *NetworkManager) CleanupNetwork(ctx context.Context, microvmID string, mode models.NetworkMode) error {
 	switch mode {
 	case models.NetworkModeNAT:
-		tapName := fmt.Sprintf("fc-tap-%s", truncateVMID(microvmID, 8))
+		tapName := ovnTAPName(microvmID)
 		macAddr := nm.generateMACAddress(microvmID)
 
 		// Remove anti-spoofing rules
@@ -795,7 +795,7 @@ func (nm *NetworkManager) CleanupNetwork(ctx context.Context, microvmID string, 
 
 	case models.NetworkModeOVN:
 		// TAP used for OVN follows fc-tap-<idprefix> pattern
-		tapName := fmt.Sprintf("fc-tap-%s", truncateVMID(microvmID, 8))
+		tapName := ovnTAPName(microvmID)
 		macAddr := nm.generateMACAddress(microvmID)
 
 		// Remove anti-spoofing rules
@@ -1727,6 +1727,39 @@ func ovnPortNameFor(microvmID string) string {
 
 // ovnPortPrefix is the prefix shared with internal/ovn's LogicalPortName.
 const ovnPortPrefix = "fc-port"
+
+// ovnTAPPrefix is the host-side counterpart of ovnPortPrefix.
+const ovnTAPPrefix = "fc-tap-"
+
+// ovnTAPName builds the TAP device name for a VM.
+//
+// The name must fit in IFNAMSIZ (15 usable characters) and must be unique per
+// VM. It was previously "fc-tap-" plus the first 8 characters of the VM id,
+// which collides for any two ids sharing a prefix: "ubuntu-ovn-1" and
+// "ubuntu-ovn-2" both resolved to fc-tap-ubuntu-o, so the second VM silently
+// attached to the first VM's TAP. Collisions are now broken with a stable hash
+// of the whole id, so distinct VMs always get distinct devices and the same VM
+// always gets the same one.
+func ovnTAPName(vmID string) string {
+	sanitised := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		default:
+			return -1
+		}
+	}, vmID)
+	sanitised = strings.Trim(strings.TrimSpace(sanitised), "-_")
+
+	// 15 usable bytes minus the prefix leaves this many characters.
+	const room = 15 - len(ovnTAPPrefix)
+	h := fmt.Sprintf("%04x", hashString(vmID)&0xffff)
+	if len(sanitised) <= room-len(h) {
+		return ovnTAPPrefix + sanitised
+	}
+	// Keep a readable prefix and disambiguate with the hash.
+	return ovnTAPPrefix + sanitised[:room-len(h)] + h
+}
 
 // ovsClient is built lazily so the OVS bridge is only required in OVN mode.
 func (nm *NetworkManager) ovsClient() (*ovs.Client, error) {

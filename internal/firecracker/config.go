@@ -198,10 +198,10 @@ func (cg *ConfigGenerator) generateNetworkInterfaces(microvm *models.MicroVMInst
 		if microvm.Network.TAPDevice != "" {
 			hostDevName = microvm.Network.TAPDevice
 		} else {
-			hostDevName = fmt.Sprintf("fc-tap-%s", microvm.ID[:8]) // fallback
+			hostDevName = ovnTAPName(microvm.ID) // fallback
 		}
 	case models.NetworkModeNAT, models.NetworkModeOVN:
-		hostDevName = fmt.Sprintf("fc-tap-%s", microvm.ID[:8])
+		hostDevName = ovnTAPName(microvm.ID)
 	case models.NetworkModeMACVLAN:
 		// Use the TAP device recorded in network info (includes proper macvlan name)
 		if microvm.Network.TAPDevice != "" {

@@ -145,6 +145,28 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
   not the gateway, and not already held by another VM - checked inside the
   allocator, not only at the API edge, so no path can bypass it.
 
+### Fixed
+- **`recoverFromNetworkInterfaceError` fabricated a substitute TAP and reported
+  success.** It matched on `"tap"` or `"interface"` in the error text, which
+  appears in nearly every network error, then deleted and recreated an unrelated
+  interface named `tap<hash of vm id>` and returned `nil` — "success". That
+  turned a loud, correct failure into a silent misconfiguration: the recovery
+  produced a second, unbound TAP that the rest of creation then used, so a VM
+  created with `network.mode: "ovn"` booted on the wrong bridge with the overlay
+  absent from the packet path. It now reports the original cause unchanged and
+  creates nothing.
+- **TAP device names collided across VMs.** The name was `fc-tap-` plus the first
+  8 characters of the VM id, so `ubuntu-ovn-1` and `ubuntu-ovn-2` both resolved
+  to `fc-tap-ubuntu-o` and the second VM silently attached to the first VM's TAP.
+  One call site also sliced `microvm.ID[:8]`, which panics on a short id.
+  `ovnTAPName` now derives a unique, IFNAMSIZ-safe (15 character) name per VM
+  with a stable hash suffix and is used by all four call sites.
+
+### Added
+- `internal/firecracker/tapname_test.go` covers both the collision and the
+  stability of `ovnTAPName`, including ids that sanitise away entirely, 200
+  characters long, and a single character.
+
 ## [Unreleased]
 
 ### Added
