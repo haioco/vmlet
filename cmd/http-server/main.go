@@ -1307,6 +1307,9 @@ func main() {
 	router.HandleFunc("/vms/{id}/ipv4", server.listIPv4AddonsHandler).Methods("GET")
 	router.HandleFunc("/vms/{id}/ipv4/{ip}", server.updateIPv4AddonHandler).Methods("PUT")
 	router.HandleFunc("/vms/{id}/ipv4/{ip}", server.removeIPv4AddonHandler).Methods("DELETE")
+	router.HandleFunc("/vms/{id}/floating-ip", server.attachFloatingIPHandler).Methods("POST")
+	router.HandleFunc("/vms/{id}/floating-ip", server.listFloatingIPsHandler).Methods("GET")
+	router.HandleFunc("/vms/{id}/floating-ip/{address}", server.detachFloatingIPHandler).Methods("DELETE")
 	// Snapshot management endpoints (ZFS-backed VMs only)
 	router.HandleFunc("/vms/{id}/snapshots", server.createSnapshotHandler).Methods("POST")
 	router.HandleFunc("/vms/{id}/snapshots", server.listSnapshotsHandler).Methods("GET")
@@ -8195,4 +8198,115 @@ func (s *HTTPServer) consoleTokenCleanup() {
 		}
 		s.consoleTokensMu.Unlock()
 	}
+}
+
+// ovnFloatingFor returns the OVN backend if this host runs it, else nil. The
+// caller answers 400/404 so the reason is specific rather than a nil panic.
+func (s *HTTPServer) ovnFloatingFor() *network.OVNBackend {
+	if s.manager == nil {
+		return nil
+	}
+	if b, ok := s.manager.GetNetworkBackend().(*network.OVNBackend); ok {
+		return b
+	}
+	return nil
+}
+
+// attachFloatingIPHandler maps a public address onto a VM on the OVN overlay:
+// POST /vms/{id}/floating-ip
+func (s *HTTPServer) attachFloatingIPHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	vmID := vars["id"]
+
+	if _, ok := s.getVM(vmID); !ok {
+		http.Error(w, "VM not found", http.StatusNotFound)
+		return
+	}
+
+	b := s.ovnFloatingFor()
+	if b == nil {
+		http.Error(w, "floating IPs require MICROVM_NETWORK_BACKEND=ovn", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Address string `json:"address"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Address) == "" {
+		http.Error(w, "address is required", http.StatusBadRequest)
+		return
+	}
+	if net.ParseIP(req.Address) == nil {
+		http.Error(w, fmt.Sprintf("invalid address %q", req.Address), http.StatusBadRequest)
+		return
+	}
+
+	if err := b.AttachFloatingIP(vmID, req.Address); err != nil {
+		http.Error(w, fmt.Sprintf("failed to attach floating IP: %v", err), http.StatusUnprocessableEntity)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "floating IP attached",
+		"vm_id":   vmID,
+		"address": req.Address,
+	})
+}
+
+// listFloatingIPsHandler lists a VM's public addresses:
+// GET /vms/{id}/floating-ip
+func (s *HTTPServer) listFloatingIPsHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	vmID := vars["id"]
+
+	if _, ok := s.getVM(vmID); !ok {
+		http.Error(w, "VM not found", http.StatusNotFound)
+		return
+	}
+
+	b := s.ovnFloatingFor()
+	if b == nil {
+		http.Error(w, "floating IPs require MICROVM_NETWORK_BACKEND=ovn", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(b.ListFloatingIPs(vmID))
+}
+
+// detachFloatingIPHandler withdraws a public address:
+// DELETE /vms/{id}/floating-ip/{address}
+func (s *HTTPServer) detachFloatingIPHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	vmID := vars["id"]
+
+	if _, ok := s.getVM(vmID); !ok {
+		http.Error(w, "VM not found", http.StatusNotFound)
+		return
+	}
+
+	b := s.ovnFloatingFor()
+	if b == nil {
+		http.Error(w, "floating IPs require MICROVM_NETWORK_BACKEND=ovn", http.StatusBadRequest)
+		return
+	}
+
+	if err := b.DetachFloatingIP(vmID, vars["address"]); err != nil {
+		http.Error(w, fmt.Sprintf("failed to detach floating IP: %v", err), http.StatusUnprocessableEntity)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "floating IP detached",
+		"vm_id":   vmID,
+		"address": vars["address"],
+	})
 }

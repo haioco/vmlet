@@ -26,6 +26,12 @@ type OVNBackend struct {
 	// vmPorts maps a VM id to the logical port name we created for it, so
 	// release does not have to re-derive (and cannot drift).
 	vmPorts map[string]string
+	// vmFloating maps a VM id to its public addresses.
+	vmFloating map[string]map[string]string
+	// vmMACs caches each VM's MAC for the DNAT rows' ARP answers.
+	vmMACs map[string]string
+	// vmAddresses caches each VM's private address.
+	vmAddresses map[string]string
 }
 
 // Compile-time check that the backend satisfies the interface.
@@ -38,7 +44,13 @@ func NewOVNBackend(config *NetworkConfig) (Backend, error) {
 	if config == nil {
 		return nil, fmt.Errorf("network: nil config for %q backend", BackendOVN)
 	}
-	return &OVNBackend{config: config, vmPorts: map[string]string{}}, nil
+	return &OVNBackend{
+		config:      config,
+		vmPorts:     map[string]string{},
+		vmFloating:  map[string]map[string]string{},
+		vmMACs:      map[string]string{},
+		vmAddresses: map[string]string{},
+	}, nil
 }
 
 func init() {
@@ -248,6 +260,8 @@ func (b *OVNBackend) AllocateVMNetwork(vmID, macAddress string) (*VMNetworkInfo,
 
 	b.mu.Lock()
 	b.vmPorts[vmID] = ovn.LogicalPortName(vmID)
+	b.vmMACs[vmID] = macAddress
+	b.vmAddresses[vmID] = ip
 	b.mu.Unlock()
 
 	return &VMNetworkInfo{
@@ -305,6 +319,9 @@ func (b *OVNBackend) ReleaseVMNetwork(vmID, macAddress string) error {
 
 	b.mu.Lock()
 	delete(b.vmPorts, vmID)
+	delete(b.vmMACs, vmID)
+	delete(b.vmAddresses, vmID)
+	delete(b.vmFloating, vmID)
 	b.mu.Unlock()
 
 	_ = network
@@ -493,4 +510,176 @@ func portNames(ports []ovn.LogicalSwitchPort) []string {
 		out = append(out, port.Name)
 	}
 	return out
+}
+
+// AttachFloatingIP maps a public address onto a VM's private address on the
+// logical router, as a DNAT row carrying the VM's MAC so OVN answers ARP for
+// the external address. The VM's port must already exist: allocating first is
+// what gives us the private address the DNAT targets.
+func (b *OVNBackend) AttachFloatingIP(vmID, externalIP string) error {
+	if vmID == "" || externalIP == "" {
+		return fmt.Errorf("network: vm id and external address are both required")
+	}
+	ctx := context.Background()
+
+	internalIP, mac, err := b.vmEndpoint(ctx, vmID)
+	if err != nil {
+		return err
+	}
+
+	err = b.withClient(func(c *ovn.Client) error {
+		_, err := c.ReconcileNAT(ctx, b.floatingSpecs(internalIP, mac), nil)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	if b.vmFloating[vmID] == nil {
+		b.vmFloating[vmID] = map[string]string{}
+	}
+	b.vmFloating[vmID][externalIP] = internalIP
+	b.mu.Unlock()
+	return nil
+}
+
+// DetachFloatingIP withdraws a public address from a VM. Idempotent: detaching
+// an address the VM does not hold is a no-op.
+func (b *OVNBackend) DetachFloatingIP(vmID, externalIP string) error {
+	ctx := context.Background()
+
+	b.mu.Lock()
+	port := b.vmPorts[vmID]
+	_, held := b.vmFloating[vmID][externalIP]
+	delete(b.vmFloating[vmID], externalIP)
+	b.mu.Unlock()
+
+	// A VM with no logical port cannot carry a NAT rule, so there is nothing
+	// to withdraw. Checking before the cache avoids a pointless DB round trip
+	// (and a misleading "not initialised" error) for a never-allocated VM.
+	if port == "" {
+		return nil
+	}
+
+	if !held {
+		// Nothing cached: reconcile from the database so a rule left by an
+		// earlier process is still withdrawn.
+		fromDB, err := b.floatingInDB(ctx, vmID, externalIP)
+		if err != nil {
+			return err
+		}
+		if !fromDB {
+			return nil
+		}
+	}
+
+	return b.withClient(func(c *ovn.Client) error {
+		_, err := c.ReconcileNAT(ctx, b.floatingSpecs("", ""), nil)
+		return err
+	})
+}
+
+// ListFloatingIPs returns the public addresses mapped onto a VM.
+func (b *OVNBackend) ListFloatingIPs(vmID string) map[string]string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	out := make(map[string]string, len(b.vmFloating[vmID]))
+	for pub, priv := range b.vmFloating[vmID] {
+		out[pub] = priv
+	}
+	return out
+}
+
+// vmEndpoint returns a VM's private address and MAC, preferring the cache and
+// falling back to OVN so it survives a restart of this process.
+func (b *OVNBackend) vmEndpoint(ctx context.Context, vmID string) (string, string, error) {
+	b.mu.RLock()
+	ip := b.vmAddresses[vmID]
+	mac := b.vmMACs[vmID]
+	port := b.vmPorts[vmID]
+	b.mu.RUnlock()
+
+	if ip != "" && mac != "" {
+		return ip, mac, nil
+	}
+	if port == "" {
+		return "", "", fmt.Errorf("network: vm %s has no OVN port; allocate it first", vmID)
+	}
+
+	if err := b.withClient(func(c *ovn.Client) error {
+		ports, err := c.ListSwitchPorts(ctx)
+		if err != nil {
+			return err
+		}
+		for _, p := range ports {
+			if p.Name != port {
+				continue
+			}
+			pub, priv := "", ""
+			if len(p.Addresses) > 0 {
+				parts := strings.SplitN(p.Addresses[0], " ", 2)
+				if len(parts) > 0 && parts[0] != "" {
+					mac = parts[0]
+				}
+				if len(parts) == 2 {
+					priv = strings.TrimSpace(parts[1])
+				}
+				ip = priv
+			}
+			_ = pub
+			return nil
+		}
+		return fmt.Errorf("network: logical port %s not found", port)
+	}); err != nil {
+		return "", "", err
+	}
+	if ip == "" || mac == "" {
+		return "", "", fmt.Errorf("network: vm %s has no address yet", vmID)
+	}
+	return ip, mac, nil
+}
+
+// floatingSpecs builds the DNAT set for every address this host has mapped,
+// which is what ReconcileNAT diffs against to add and prune.
+func (b *OVNBackend) floatingSpecs(internalIP, mac string) []ovn.FloatingIP {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	router := ovn.GatewayRouterName(b.networkName())
+	var out []ovn.FloatingIP
+	for _, addrs := range b.vmFloating {
+		for pub, priv := range addrs {
+			if pub == "" || priv == "" {
+				continue
+			}
+			out = append(out, ovn.FloatingIP{
+				ExternalIP: pub,
+				InternalIP: priv,
+				MAC:        mac,
+				Router:     router,
+			})
+		}
+	}
+	return out
+}
+
+// floatingInDB reports whether a DNAT row exists for this VM and address.
+func (b *OVNBackend) floatingInDB(ctx context.Context, vmID, externalIP string) (bool, error) {
+	found := false
+	err := b.withClient(func(c *ovn.Client) error {
+		rows, err := c.ListNATs(ctx)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.Type == ovn.NATTypeDNAT &&
+				row.ExternalIP == externalIP &&
+				row.ExternalIDs["vmlet-vm"] == vmID {
+				found = true
+			}
+		}
+		return nil
+	})
+	return found, err
 }

@@ -148,3 +148,61 @@ func TestOVNEndpointDefault(t *testing.T) {
 		t.Errorf("DefaultNBEndpoint = %q", got)
 	}
 }
+
+func TestOVNBackend_FloatingIPValidation(t *testing.T) {
+	b := &OVNBackend{vmPorts: map[string]string{}, vmFloating: map[string]map[string]string{}, vmMACs: map[string]string{}, vmAddresses: map[string]string{}}
+
+	if err := b.AttachFloatingIP("", "1.2.3.4"); err == nil {
+		t.Error("AttachFloatingIP accepted an empty VM id")
+	}
+	if err := b.AttachFloatingIP("vm-1", ""); err == nil {
+		t.Error("AttachFloatingIP accepted an empty address")
+	}
+	// No OVN port means the VM was never allocated.
+	if err := b.AttachFloatingIP("vm-missing", "1.2.3.4"); err == nil {
+		t.Error("AttachFloatingIP accepted a VM with no OVN port")
+	}
+	if got := b.ListFloatingIPs("vm-1"); len(got) != 0 {
+		t.Errorf("ListFloatingIPs on a fresh backend = %v, want empty", got)
+	}
+	// Detach of an unheld address is a no-op, not an error.
+	if err := b.DetachFloatingIP("vm-1", "1.2.3.4"); err != nil {
+		t.Errorf("DetachFloatingIP of an unheld address: %v", err)
+	}
+}
+
+func TestOVNBackend_FloatingSpecsUseOVNNames(t *testing.T) {
+	b := &OVNBackend{
+		config:      &NetworkConfig{BridgeName: "br-int", BridgeCIDR: "10.0.0.0/24"},
+		network:     "alpha",
+		vmPorts:     map[string]string{},
+		vmFloating:  map[string]map[string]string{"vm-1": {"1.2.3.4": "10.0.0.10"}},
+		vmMACs:      map[string]string{},
+		vmAddresses: map[string]string{},
+	}
+
+	specs := b.floatingSpecs("", "")
+	if len(specs) != 1 {
+		t.Fatalf("specs = %d, want 1", len(specs))
+	}
+	got := specs[0]
+	if got.ExternalIP != "1.2.3.4" || got.InternalIP != "10.0.0.10" {
+		t.Errorf("spec addresses = %q -> %q, want 1.2.3.4 -> 10.0.0.10", got.ExternalIP, got.InternalIP)
+	}
+	// The DNAT must land on the network's logical router, not a hardcoded one.
+	if got.Router != ovn.GatewayRouterName("alpha") {
+		t.Errorf("router = %q, want %q", got.Router, ovn.GatewayRouterName("alpha"))
+	}
+}
+
+func TestOVNBackend_ListFloatingIsACopy(t *testing.T) {
+	b := &OVNBackend{
+		vmPorts: map[string]string{}, vmFloating: map[string]map[string]string{"vm-1": {"1.2.3.4": "10.0.0.10"}},
+		vmMACs: map[string]string{}, vmAddresses: map[string]string{},
+	}
+	got := b.ListFloatingIPs("vm-1")
+	got["mutated"] = "x"
+	if _, leaked := b.vmFloating["vm-1"]["mutated"]; leaked {
+		t.Error("ListFloatingIPs handed out its internal map")
+	}
+}

@@ -58,6 +58,15 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
   OVN now boots with `ip=dhcp`, which is what the `DHCP_Options` row bound to
   its logical port actually serves.
 
+- Floating IPs for OVN VMs: `AttachFloatingIP` / `DetachFloatingIP` /
+  `ListFloatingIPs` on the OVN backend map a public address onto a VM's private
+  address as a DNAT row carrying the VM's MAC, so OVN answers ARP for the
+  external address. Detach is idempotent and reconciles from the database when
+  the in-process cache has no entry, so a rule left by an earlier process is
+  still withdrawn. Exposed as `POST`/`GET /vms/{id}/floating-ip` and
+  `DELETE /vms/{id}/floating-ip/{address}`, which answer 400 on a non-OVN
+  backend and 404 for an unknown VM.
+
 ## [Unreleased]
 
 ### Added

@@ -105,6 +105,8 @@ type Manager struct {
 	configGenerator *ConfigGenerator
 	imageManager    *images.ImageManager
 	enhancedNetwork network.Backend
+	// backendMu guards reads of enhancedNetwork after construction.
+	backendMu       sync.RWMutex
 	bootValidator   *validation.BootValidator
 	errorHandler    *ErrorHandler
 	systemValidator *SystemValidator
@@ -3829,6 +3831,15 @@ func (m *Manager) GetNetworkManager() *NetworkManager {
 // GetStorageBackend returns the storage backend for external access (snapshot management)
 func (m *Manager) GetStorageBackend() storage.StorageBackend {
 	return m.storageBackend
+}
+
+// GetNetworkBackend returns the network backend this manager constructed, so
+// the HTTP layer can call backend-specific operations (floating IPs on the OVN
+// backend) without re-creating or re-configuring anything.
+func (m *Manager) GetNetworkBackend() network.Backend {
+	m.backendMu.RLock()
+	defer m.backendMu.RUnlock()
+	return m.enhancedNetwork
 }
 
 // parseBandwidthLimits parses bandwidth limit strings (e.g., "100mbit", "50Mbit") to Mbps integers
