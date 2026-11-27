@@ -14,7 +14,7 @@ func NewNoopBackend() Backend {
 func (*noopBackend) Initialize() error { return nil }
 func (*noopBackend) Shutdown() error   { return nil }
 
-func (*noopBackend) AllocateVMNetwork(vmID, macAddress string) (*VMNetworkInfo, error) {
+func (*noopBackend) AllocateVMNetwork(vmID, macAddress, networkID string) (*VMNetworkInfo, error) {
 	return &VMNetworkInfo{VMID: vmID, MACAddress: macAddress}, nil
 }
 

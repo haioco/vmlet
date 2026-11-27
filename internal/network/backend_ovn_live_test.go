@@ -68,7 +68,7 @@ func TestOVNBackend_LiveNorthboundDB(t *testing.T) {
 	}()
 
 	// --- Allocation: port, DHCP reservation and ACL rows. ---
-	infoA, err := b.AllocateVMNetwork(vmA, macA)
+	infoA, err := b.AllocateVMNetwork(vmA, macA, "")
 	if err != nil {
 		t.Fatalf("AllocateVMNetwork(%s): %v", vmA, err)
 	}
@@ -122,7 +122,7 @@ func TestOVNBackend_LiveNorthboundDB(t *testing.T) {
 	t.Logf("DNAT installed: %s -> %s (mac %s)", floatA, infoA.IPAddress, macA)
 
 	// --- A second VM, so release has something to damage. ---
-	infoB, err := b.AllocateVMNetwork(vmB, macB)
+	infoB, err := b.AllocateVMNetwork(vmB, macB, "")
 	if err != nil {
 		t.Fatalf("AllocateVMNetwork(%s): %v", vmB, err)
 	}

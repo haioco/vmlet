@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/haioco/vmlet/internal/models"
@@ -118,6 +119,24 @@ func (s *SQLiteStorage) initSchema() error {
 	// Add created_at to vm_ipv4_addons if missing (schema migration)
 	_, _ = s.db.Exec(`ALTER TABLE vm_ipv4_addons ADD COLUMN addon_created_at DATETIME`)
 
+	// Networks (VPCs) table. Each row is one logical network: an OVN switch
+	// with a subnet. VMs reference network_id to pick which VPC they live in.
+	_, err = s.db.Exec(`
+	CREATE TABLE IF NOT EXISTS networks (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		cidr TEXT NOT NULL,
+		gateway TEXT NOT NULL,
+		dns_servers TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	)`)
+	if err != nil {
+		return fmt.Errorf("failed to create networks table: %w", err)
+	}
+
+	// Add network_id to vms if missing (schema migration)
+	_, _ = s.db.Exec(`ALTER TABLE vms ADD COLUMN network_id TEXT`)
+
 	// Create indexes for performance
 	_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_vms_status ON vms(status)`)
 	if err != nil {
@@ -147,8 +166,8 @@ func (s *SQLiteStorage) SaveVM(vm *models.MicroVMInstance) error {
 		ipv6_prefix_length, ipv4_nat, ipv4_nat_address, assignment_method,
 		ssh_port, public_key, tap_device, bridge_name, bandwidth_ingress,
 		bandwidth_egress, customer_id, auto_start, created_at, last_activity,
-		traffic_ingress_bytes, traffic_egress_bytes
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		traffic_ingress_bytes, traffic_egress_bytes, network_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		vm.ID, vm.NodeID, vm.Status, vm.Resources.VCPUs, vm.Resources.MemoryMB,
 		vm.Resources.StorageMB, vm.Storage.Type, vm.Metadata.Labels["image_id"],
 		vm.Metadata.Labels["image_name"], vm.Network.MACAddress, vm.Network.IPAddress,
@@ -157,7 +176,8 @@ func (s *SQLiteStorage) SaveVM(vm *models.MicroVMInstance) error {
 		vm.Network.SSHPort, vm.Network.PublicKey, vm.Network.TAPDevice,
 		vm.Network.BridgeName, vm.Network.BandwidthIngress, vm.Network.BandwidthEgress,
 		vm.Metadata.CustomerID, vm.Metadata.AutoStart, vm.Metadata.CreatedAt,
-		vm.Metadata.LastActivity, vm.TrafficIngressBytes, vm.TrafficEgressBytes)
+		vm.Metadata.LastActivity, vm.TrafficIngressBytes, vm.TrafficEgressBytes,
+		vm.Network.NetworkID)
 
 	if err != nil {
 		tx.Rollback()
@@ -212,12 +232,13 @@ func (s *SQLiteStorage) LoadVM(vmID string) (*models.MicroVMInstance, error) {
 	       ipv6_prefix_length, ipv4_nat, ipv4_nat_address, assignment_method,
 	       ssh_port, public_key, tap_device, bridge_name, bandwidth_ingress,
 	       bandwidth_egress, customer_id, auto_start, created_at, last_activity,
-	       traffic_ingress_bytes, traffic_egress_bytes
+	       traffic_ingress_bytes, traffic_egress_bytes, network_id
 	FROM vms WHERE id = ?`, vmID)
 
 	var vm models.MicroVMInstance
 	var imageID, imageName, createdAt, lastActivity sql.NullString
 	var ipv4NAT sql.NullBool
+	var networkID sql.NullString
 
 	err := row.Scan(
 		&vm.ID, &vm.NodeID, &vm.Status, &vm.Resources.VCPUs, &vm.Resources.MemoryMB,
@@ -228,7 +249,7 @@ func (s *SQLiteStorage) LoadVM(vmID string) (*models.MicroVMInstance, error) {
 		&vm.Network.PublicKey, &vm.Network.TAPDevice, &vm.Network.BridgeName,
 		&vm.Network.BandwidthIngress, &vm.Network.BandwidthEgress, &vm.Metadata.CustomerID,
 		&vm.Metadata.AutoStart, &createdAt, &lastActivity, &vm.TrafficIngressBytes,
-		&vm.TrafficEgressBytes)
+		&vm.TrafficEgressBytes, &networkID)
 
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -296,6 +317,9 @@ func (s *SQLiteStorage) LoadVM(vmID string) (*models.MicroVMInstance, error) {
 	}
 
 	vm.Network.IPv4NAT = ipv4NAT.Bool
+	if networkID.Valid {
+		vm.Network.NetworkID = networkID.String
+	}
 
 	return &vm, nil
 }
@@ -430,4 +454,91 @@ func (s *SQLiteStorage) GetStats() (map[string]interface{}, error) {
 	}
 
 	return stats, nil
+}
+
+// SaveNetwork creates or updates a network (VPC).
+func (s *SQLiteStorage) SaveNetwork(n *models.Network) error {
+	_, err := s.db.Exec(`
+	INSERT OR REPLACE INTO networks (id, name, cidr, gateway, dns_servers, created_at)
+	VALUES (?, ?, ?, ?, ?, ?)`,
+		n.ID, n.Name, n.CIDR, n.Gateway, joinStrings(n.DNSServers), n.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("failed to save network: %w", err)
+	}
+	return nil
+}
+
+// LoadNetwork loads a single network by ID.
+func (s *SQLiteStorage) LoadNetwork(id string) (*models.Network, error) {
+	row := s.db.QueryRow(`SELECT id, name, cidr, gateway, dns_servers, created_at FROM networks WHERE id = ?`, id)
+	n, err := scanNetwork(row)
+	if err != nil {
+		return nil, err
+	}
+	return n, nil
+}
+
+// LoadAllNetworks loads every network.
+func (s *SQLiteStorage) LoadAllNetworks() ([]*models.Network, error) {
+	rows, err := s.db.Query(`SELECT id, name, cidr, gateway, dns_servers, created_at FROM networks`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load networks: %w", err)
+	}
+	defer rows.Close()
+	var out []*models.Network
+	for rows.Next() {
+		n, err := scanNetwork(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// DeleteNetwork removes a network by ID.
+func (s *SQLiteStorage) DeleteNetwork(id string) error {
+	_, err := s.db.Exec(`DELETE FROM networks WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete network: %w", err)
+	}
+	return nil
+}
+
+// scanNetwork reads a Network from a row scanner.
+func scanNetwork(sc interface{ Scan(...interface{}) error }) (*models.Network, error) {
+	var n models.Network
+	var dns string
+	var created string
+	if err := sc.Scan(&n.ID, &n.Name, &n.CIDR, &n.Gateway, &dns, &created); err != nil {
+		return nil, err
+	}
+	if dns != "" {
+		n.DNSServers = splitStrings(dns)
+	}
+	if t, err := time.Parse("2006-01-02 15:04:05", created); err == nil {
+		n.CreatedAt = t
+	} else if t, err := time.Parse(time.RFC3339, created); err == nil {
+		n.CreatedAt = t
+	}
+	return &n, nil
+}
+
+func joinStrings(s []string) string {
+	return strings.Join(s, ",")
+}
+
+func splitStrings(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

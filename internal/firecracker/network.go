@@ -22,12 +22,12 @@ type NetworkManager struct {
 	// ovnAllocate is set by NewManager when the OVN backend is selected. It
 	// creates the VM's logical port, DHCP reservation and port security, and
 	// returns the address the guest should boot with.
-	ovnAllocate func(vmID, mac string) (*models.NetworkInfo, error)
+	ovnAllocate func(vmID, mac, networkID string) (*models.NetworkInfo, error)
 }
 
 // SetOVNAllocator wires the OVN backend into the network manager. It is
 // optional: without it OVN modes fall back to a placeholder address.
-func (nm *NetworkManager) SetOVNAllocator(fn func(vmID, mac string) (*models.NetworkInfo, error)) {
+func (nm *NetworkManager) SetOVNAllocator(fn func(vmID, mac, networkID string) (*models.NetworkInfo, error)) {
 	nm.ovnAllocate = fn
 }
 
@@ -68,7 +68,7 @@ func dhcpTapNameFor(microvmID string) string {
 // customMAC is an optional MAC address to use instead of generating one
 // bandwidthIngress and bandwidthEgress are optional bandwidth limits (e.g., "100mbit")
 // customIPv6, customIPv6Gateway, customIPv6Prefix are optional custom IPv6 settings
-func (nm *NetworkManager) ConfigureNetwork(ctx context.Context, microvmID string, mode models.NetworkMode, customMAC, bandwidthIngress, bandwidthEgress, customIPv6, customIPv6Gateway string, customIPv6Prefix int) (*models.NetworkInfo, error) {
+func (nm *NetworkManager) ConfigureNetwork(ctx context.Context, microvmID string, mode models.NetworkMode, customMAC, bandwidthIngress, bandwidthEgress, customIPv6, customIPv6Gateway string, customIPv6Prefix int, networkID string) (*models.NetworkInfo, error) {
 	switch mode {
 	case models.NetworkModeNAT:
 		return nm.configureNATNetwork(ctx, microvmID)
@@ -79,7 +79,7 @@ func (nm *NetworkManager) ConfigureNetwork(ctx context.Context, microvmID string
 	case models.NetworkModeIPv6Only:
 		return nm.configureIPv6OnlyNetwork(ctx, microvmID, customMAC, bandwidthIngress, bandwidthEgress, customIPv6, customIPv6Gateway, customIPv6Prefix)
 	case models.NetworkModeOVN:
-		return nm.configureOVNNetwork(ctx, microvmID)
+		return nm.configureOVNNetwork(ctx, microvmID, networkID)
 	default:
 		return nil, fmt.Errorf("unsupported network mode: %s", mode)
 	}
@@ -652,7 +652,7 @@ func (nm *NetworkManager) configureIPv6OnlyNetwork(ctx context.Context, microvmI
 // configureOVNNetwork configures OVN networking: the backend creates the
 // logical port, the DHCP reservation and port security, and the TAP is
 // attached to br-int with the iface-id that binds it to that port.
-func (nm *NetworkManager) configureOVNNetwork(ctx context.Context, microvmID string) (*models.NetworkInfo, error) {
+func (nm *NetworkManager) configureOVNNetwork(ctx context.Context, microvmID, networkID string) (*models.NetworkInfo, error) {
 	// Generate MAC address
 	macAddr := nm.generateMACAddress(microvmID)
 
@@ -671,7 +671,7 @@ func (nm *NetworkManager) configureOVNNetwork(ctx context.Context, microvmID str
 	if nm.ovnAllocate != nil {
 		// The backend owns the logical topology: it allocates and pins the
 		// address, binds the subnet's DHCP_Options and sets port security.
-		info, err := nm.ovnAllocate(microvmID, macAddr)
+		info, err := nm.ovnAllocate(microvmID, macAddr, networkID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to allocate OVN network: %w", err)
 		}

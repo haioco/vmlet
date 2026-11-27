@@ -128,7 +128,7 @@ func (nm *NetworkManager) Shutdown() error {
 }
 
 // AllocateVMNetwork allocates network resources for a VM
-func (nm *NetworkManager) AllocateVMNetwork(vmID, macAddress string) (*VMNetworkInfo, error) {
+func (nm *NetworkManager) AllocateVMNetwork(vmID, macAddress, networkID string) (*VMNetworkInfo, error) {
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
 

@@ -25,7 +25,7 @@ const (
 type Backend interface {
 	Initialize() error
 	Shutdown() error
-	AllocateVMNetwork(vmID, macAddress string) (*VMNetworkInfo, error)
+	AllocateVMNetwork(vmID, macAddress, networkID string) (*VMNetworkInfo, error)
 	ReleaseVMNetwork(vmID, macAddress string) error
 	ValidateNetworkSetup() error
 	GetNetworkStatus() (*NetworkStatus, error)

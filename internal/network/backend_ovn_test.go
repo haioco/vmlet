@@ -24,7 +24,7 @@ func TestOVNBackend_RequiresInitialisation(t *testing.T) {
 	// An uninitialised backend must say so, not nil-pointer.
 	backend := &OVNBackend{vmPorts: map[string]string{}}
 
-	if _, err := backend.AllocateVMNetwork("vm-1", "02:fc:00:00:00:01"); err == nil {
+	if _, err := backend.AllocateVMNetwork("vm-1", "02:fc:00:00:00:01", ""); err == nil {
 		t.Error("AllocateVMNetwork should fail before Initialize")
 	}
 	if err := backend.ValidateNetworkSetup(); err == nil {
@@ -46,7 +46,7 @@ func TestOVNBackend_RequiresInitialisation(t *testing.T) {
 
 func TestOVNBackend_RejectsEmptyVMID(t *testing.T) {
 	backend := &OVNBackend{vmPorts: map[string]string{}}
-	if _, err := backend.AllocateVMNetwork("", "02:fc:00:00:00:01"); err == nil {
+	if _, err := backend.AllocateVMNetwork("", "02:fc:00:00:00:01", ""); err == nil {
 		t.Fatal("AllocateVMNetwork accepted an empty VM id")
 	}
 }

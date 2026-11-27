@@ -203,7 +203,7 @@ func TestNoopBackend(t *testing.T) {
 		t.Fatalf("Shutdown() error: %v", err)
 	}
 
-	info, err := backend.AllocateVMNetwork("vm-1", "aa:bb:cc:dd:ee:ff")
+	info, err := backend.AllocateVMNetwork("vm-1", "aa:bb:cc:dd:ee:ff", "")
 	if err != nil {
 		t.Fatalf("AllocateVMNetwork() error: %v", err)
 	}

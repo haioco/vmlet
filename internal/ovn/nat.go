@@ -278,3 +278,127 @@ func mutateRouterRef(api client.API, routerUUID string, mutator ovsdb.Mutator, n
 	}
 	return ops, nil
 }
+
+// PortForwardSpec describes a port-level DNAT rule.
+type PortForwardSpec struct {
+	ExternalIP   string
+	ExternalPort int
+	InternalIP   string
+	InternalPort int
+	Protocol     string // "tcp" or "udp"
+	MAC          string // VM MAC for ARP
+	Router       string
+	VMID         string
+}
+
+// EnsurePortForward creates a DNAT row mapping externalIP:externalPort to
+// internalIP:internalPort on the given router. Idempotent.
+func (c *Client) EnsurePortForward(ctx context.Context, spec PortForwardSpec) error {
+	if spec.ExternalIP == "" || spec.InternalIP == "" || spec.ExternalPort == 0 || spec.InternalPort == 0 {
+		return fmt.Errorf("ovn: port forward requires external/internal IP and both ports")
+	}
+	router, ok := c.routerByName(ctx, spec.Router)
+	if !ok {
+		return fmt.Errorf("ovn: logical router %q does not exist", spec.Router)
+	}
+
+	extIP := fmt.Sprintf("%s:%d", spec.ExternalIP, spec.ExternalPort)
+	intIP := fmt.Sprintf("%s:%d", spec.InternalIP, spec.InternalPort)
+
+	// Check if already exists
+	nats, err := c.ListNATs(ctx)
+	if err != nil {
+		return err
+	}
+	for _, n := range nats {
+		if n.ExternalIDs["vmlet-vm"] == spec.VMID &&
+			n.ExternalIP == extIP && n.LogicalIP == intIP {
+			return nil
+		}
+	}
+
+	row := &NAT{
+		ExternalIDs: map[string]string{
+			"vmlet-managed":  "true",
+			"vmlet-vm":       spec.VMID,
+			"vmlet-portfwd":  fmt.Sprintf("%d->%d", spec.ExternalPort, spec.InternalPort),
+		},
+		ExternalIP: extIP,
+		LogicalIP:  intIP,
+		Type:       NATTypeDNAT,
+	}
+	if spec.MAC != "" {
+		mac := spec.MAC
+		row.ExternalMAC = &mac
+	}
+
+	named := namedRef("nat", fmt.Sprintf("pf-%s-%d", spec.VMID, spec.ExternalPort))
+	row.UUID = named
+	createOps, err := c.api.Create(row)
+	if err != nil {
+		return fmt.Errorf("ovn: cannot build create op for port forward: %w", err)
+	}
+	ops := append([]ovsdb.Operation{}, createOps...)
+	refOps, err := mutateRouterRef(c.api, router.UUID, ovsdb.MutateOperationInsert, named)
+	if err != nil {
+		return err
+	}
+	ops = append(ops, refOps...)
+	return c.transact(ctx, ops, "create port forward")
+}
+
+// DropPortForward removes a port forward rule.
+func (c *Client) DropPortForward(ctx context.Context, vmID, externalIP string, externalPort int) error {
+	nats, err := c.ListNATs(ctx)
+	if err != nil {
+		return err
+	}
+	routers, _ := c.ListRouters(ctx)
+
+	var ops []ovsdb.Operation
+	for i := range nats {
+		n := nats[i]
+		if n.ExternalIDs["vmlet-vm"] != vmID {
+			continue
+		}
+		if n.ExternalIDs["vmlet-portfwd"] == "" {
+			continue
+		}
+		extIP := fmt.Sprintf("%s:%d", externalIP, externalPort)
+		if n.ExternalIP != extIP {
+			continue
+		}
+		for _, r := range routers {
+			if containsString(r.NAT, n.UUID) {
+				delOps, err := mutateRouterRef(c.api, r.UUID, ovsdb.MutateOperationDelete, n.UUID)
+				if err != nil {
+					return err
+				}
+				ops = append(ops, delOps...)
+			}
+		}
+		delOps, err := c.api.Where(&n).Delete()
+		if err != nil {
+			return err
+		}
+		ops = append(ops, delOps...)
+	}
+	if len(ops) == 0 {
+		return nil
+	}
+	return c.transact(ctx, ops, "drop port forward")
+}
+
+// routerByName looks up a router by name.
+func (c *Client) routerByName(ctx context.Context, name string) (LogicalRouter, bool) {
+	routers, err := c.ListRouters(ctx)
+	if err != nil {
+		return LogicalRouter{}, false
+	}
+	for _, r := range routers {
+		if r.Name == name {
+			return r, true
+		}
+	}
+	return LogicalRouter{}, false
+}

@@ -322,8 +322,8 @@ func NewManager(config *Config, reservationMgr *network.ReservationManager) (*Ma
 	// network manager so an OVN-mode VM gets a logical port, a DHCP
 	// reservation and port security, not a placeholder address.
 	if ovnBackend, ok := enhancedNetwork.(*network.OVNBackend); ok {
-		networkManager.SetOVNAllocator(func(vmID, mac string) (*models.NetworkInfo, error) {
-			info, err := ovnBackend.AllocateVMNetwork(vmID, mac)
+		networkManager.SetOVNAllocator(func(vmID, mac, networkID string) (*models.NetworkInfo, error) {
+			info, err := ovnBackend.AllocateVMNetwork(vmID, mac, networkID)
 			if err != nil {
 				return nil, err
 			}
@@ -437,9 +437,17 @@ func (m *Manager) CreateMicroVM(ctx context.Context, microvm *models.MicroVMInst
 			staticIP = microvm.Network.IPAddress
 		}
 
+		// For OVN, record the static IP on the backend before allocation so
+		// the allocator uses it instead of auto-assigning.
+		if microvm.Network.AssignmentMethod == models.NetworkModeOVN && staticIP != "" {
+			if ovnBackend, ok := m.enhancedNetwork.(*network.OVNBackend); ok && ovnBackend != nil {
+				ovnBackend.SetStaticIP(microvm.ID, staticIP)
+			}
+		}
+
 		// Pass bandwidth limits and custom IPv6 from API request to network configuration
 		// Use the actual assignment method (DHCP or MACVLAN) not hardcoded DHCP
-		networkInfo, err := m.networkManager.ConfigureNetwork(ctx, microvm.ID, microvm.Network.AssignmentMethod, macAddress, microvm.Network.BandwidthIngress, microvm.Network.BandwidthEgress, microvm.Network.IPv6Address, microvm.Network.IPv6Gateway, microvm.Network.IPv6PrefixLength)
+		networkInfo, err := m.networkManager.ConfigureNetwork(ctx, microvm.ID, microvm.Network.AssignmentMethod, macAddress, microvm.Network.BandwidthIngress, microvm.Network.BandwidthEgress, microvm.Network.IPv6Address, microvm.Network.IPv6Gateway, microvm.Network.IPv6PrefixLength, microvm.Network.NetworkID)
 		if err != nil {
 			microvm.Status = models.MicroVMStatusError
 			return fmt.Errorf("failed to configure %s network: %w", microvm.Network.AssignmentMethod, err)

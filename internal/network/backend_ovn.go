@@ -16,13 +16,35 @@ import (
 // call: every VM gets a logical port on its network's switch, a DHCP
 // reservation, MAC/IP port security and (optionally) a floating IP, and all of
 // that is derived from the VM id so re-applying it is idempotent.
+// OVNNetwork is one VPC: a logical switch + subnet + gateway + DNS.
+type OVNNetwork struct {
+	ID         string
+	Name       string
+	CIDR       string
+	Gateway    string
+	DNSServers []string
+}
+
+// PortForward maps an external port on a public IP to an internal port on a VM.
+type PortForward struct {
+	VMID         string
+	ExternalIP   string
+	ExternalPort int
+	InternalPort int
+	Protocol     string // "tcp" or "udp"
+}
+
 type OVNBackend struct {
 	config *NetworkConfig
 
-	mu      sync.RWMutex
-	ovn     *ovn.Client
-	ovs     *ovs.Client
-	network string
+	mu             sync.RWMutex
+	ovn            *ovn.Client
+	ovs            *ovs.Client
+	network        string
+	networks       map[string]*OVNNetwork   // network ID -> definition
+	vmNetwork      map[string]string        // vmID -> network ID
+	vmStaticIP     map[string]string        // vmID -> user-requested static IP
+	vmPortForwards map[string][]PortForward // vmID -> port forwards
 	// vmPorts maps a VM id to the logical port name we created for it, so
 	// release does not have to re-derive (and cannot drift).
 	vmPorts map[string]string
@@ -45,11 +67,15 @@ func NewOVNBackend(config *NetworkConfig) (Backend, error) {
 		return nil, fmt.Errorf("network: nil config for %q backend", BackendOVN)
 	}
 	return &OVNBackend{
-		config:      config,
-		vmPorts:     map[string]string{},
-		vmFloating:  map[string]map[string]string{},
-		vmMACs:      map[string]string{},
-		vmAddresses: map[string]string{},
+		config:         config,
+		vmPorts:        map[string]string{},
+		vmFloating:     map[string]map[string]string{},
+		vmMACs:         map[string]string{},
+		vmAddresses:    map[string]string{},
+		networks:       map[string]*OVNNetwork{},
+		vmNetwork:      map[string]string{},
+		vmStaticIP:     map[string]string{},
+		vmPortForwards: map[string][]PortForward{},
 	}, nil
 }
 
@@ -77,6 +103,73 @@ func ovnEndpoint() string {
 	return ovn.DefaultNBEndpoint
 }
 
+// SetNetworks replaces the set of VPCs this backend serves. Called by the
+// manager after it loads networks from storage. A network with an empty ID is
+// treated as the default ("default").
+func (b *OVNBackend) SetNetworks(networks []*OVNNetwork) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.networks = map[string]*OVNNetwork{}
+	for _, n := range networks {
+		if n == nil {
+			continue
+		}
+		if n.ID == "" {
+			n.ID = "default"
+		}
+		if n.Name == "" {
+			n.Name = n.ID
+		}
+		b.networks[n.ID] = n
+	}
+	// Ensure a default network always exists.
+	if _, ok := b.networks["default"]; !ok {
+		b.networks["default"] = &OVNNetwork{
+			ID:   "default",
+			Name: "default",
+		}
+	}
+}
+
+// SetStaticIP records a user-requested static IP for a VM. Called before
+// AllocateVMNetwork; the allocator uses it instead of auto-allocating.
+func (b *OVNBackend) SetStaticIP(vmID, ip string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if ip == "" {
+		delete(b.vmStaticIP, vmID)
+	} else {
+		b.vmStaticIP[vmID] = ip
+	}
+}
+
+// networkForVM returns the network ID a VM belongs to, defaulting to "default".
+func (b *OVNBackend) networkForVM(vmID string) string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if id := b.vmNetwork[vmID]; id != "" {
+		return id
+	}
+	return "default"
+}
+
+// networkDef returns the definition for a network ID, falling back to the
+// default network.
+func (b *OVNBackend) networkDef(id string) *OVNNetwork {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if id == "" {
+		id = "default"
+	}
+	if n, ok := b.networks[id]; ok {
+		return n
+	}
+	if n, ok := b.networks["default"]; ok {
+		return n
+	}
+	return &OVNNetwork{ID: "default", Name: "default"}
+}
+
 // networkName returns the vmlet network this host serves. It defaults to
 // "default" so a single-network deployment needs no extra configuration.
 func (b *OVNBackend) networkName() string {
@@ -100,27 +193,43 @@ func (b *OVNBackend) integrationBridge() string {
 	return IntegrationBridge
 }
 
-// subnet is the network's CIDR, derived from the bridge CIDR when the operator
-// did not give one.
+// subnet is the default network's CIDR (backward compat).
 func (b *OVNBackend) subnet() (string, string, error) {
+	cidr, gw, _, err := b.subnetFor("default")
+	return cidr, gw, err
+}
+
+// subnetFor returns the CIDR, gateway and DNS servers for a network ID.
+func (b *OVNBackend) subnetFor(networkID string) (string, string, []string, error) {
 	b.ensureConfig()
-	cidr := strings.TrimSpace(b.config.BridgeCIDR)
+	n := b.networkDef(networkID)
+
+	// For the default network, fall back to the legacy config fields so
+	// existing deployments and tests that set BridgeCIDR/BridgeIP keep working.
+	cidr := strings.TrimSpace(n.CIDR)
+	if cidr == "" && networkID == "default" {
+		cidr = strings.TrimSpace(b.config.BridgeCIDR)
+	}
 	if cidr == "" {
 		cidr = "10.0.0.0/24"
 	}
+	gateway := strings.TrimSpace(n.Gateway)
+	if gateway == "" && networkID == "default" {
+		gateway = strings.TrimSpace(b.config.BridgeIP)
+	}
 	ip, ipNet, err := ovn.ParseCIDR(cidr)
 	if err != nil {
-		return "", "", fmt.Errorf("network: invalid OVN subnet %q: %w", cidr, err)
+		return "", "", nil, fmt.Errorf("network: invalid OVN subnet %q: %w", cidr, err)
 	}
-	gateway := strings.TrimSpace(b.config.BridgeIP)
 	if gateway == "" {
 		gateway = ovn.FirstUsable(ipNet).String()
 	}
-	// The subnet must be CIDR notation ("10.0.0.0/24"), not a dotted netmask
-	// ("10.0.0.0/255.255.255.0"): net.ParseCIDR rejects the latter, and every
-	// caller here hands this string to OVN and to ParseCIDR again.
 	ones, _ := ipNet.Mask.Size()
-	return fmt.Sprintf("%s/%d", ip.String(), ones), gateway, nil
+	dns := n.DNSServers
+	if len(dns) == 0 {
+		dns = []string{"8.8.8.8", "1.1.1.1"}
+	}
+	return fmt.Sprintf("%s/%d", ip.String(), ones), gateway, dns, nil
 }
 
 // Initialize connects to the OVN Northbound DB and makes sure the datapath and
@@ -154,21 +263,34 @@ func (b *OVNBackend) Initialize() error {
 // It is safe to call repeatedly, which is what makes a controller restart (or a
 // second vmlet on the same network) converge instead of duplicating.
 func (b *OVNBackend) reconcileTopology(ctx context.Context) error {
-	network := b.networkName()
-	subnet, gateway, err := b.subnet()
-	if err != nil {
-		return err
+	b.mu.RLock()
+	nets := make([]*OVNNetwork, 0, len(b.networks))
+	for _, n := range b.networks {
+		nets = append(nets, n)
+	}
+	b.mu.RUnlock()
+
+	if len(nets) == 0 {
+		// Fall back to the default network from env/config.
+		nets = append(nets, b.networkDef("default"))
+	}
+
+	defs := make([]ovn.NetworkDefinition, 0, len(nets))
+	for _, n := range nets {
+		cidr, gateway, dns, err := b.subnetFor(n.ID)
+		if err != nil {
+			return err
+		}
+		defs = append(defs, ovn.NetworkDefinition{
+			Name:       n.Name,
+			CIDR:       cidr,
+			GatewayIP:  gateway,
+			DNSServers: dns,
+		})
 	}
 
 	return b.withClient(func(c *ovn.Client) error {
-		_, err := c.ReconcileTopology(ctx, ovn.TopologyFromNetworks([]ovn.NetworkDefinition{
-			{
-				Name:       network,
-				CIDR:       subnet,
-				GatewayIP:  gateway,
-				DNSServers: b.dnsServers(),
-			},
-		}))
+		_, err := c.ReconcileTopology(ctx, ovn.TopologyFromNetworks(defs))
 		return err
 	})
 }
@@ -183,7 +305,7 @@ func (b *OVNBackend) dnsServers() []string {
 
 // AllocateVMNetwork gives a VM its logical port on the OVN overlay: the port
 // itself, a DHCP reservation on the network's subnet, and MAC/IP port security.
-func (b *OVNBackend) AllocateVMNetwork(vmID, macAddress string) (*VMNetworkInfo, error) {
+func (b *OVNBackend) AllocateVMNetwork(vmID, macAddress, networkID string) (*VMNetworkInfo, error) {
 	if vmID == "" {
 		return nil, fmt.Errorf("network: vm id must not be empty")
 	}
@@ -195,12 +317,19 @@ func (b *OVNBackend) AllocateVMNetwork(vmID, macAddress string) (*VMNetworkInfo,
 		return nil, err
 	}
 
-	network := b.networkName()
+	if networkID == "" {
+		networkID = "default"
+	}
+	network := b.networkDef(networkID).Name
+	if network == "" {
+		network = networkID
+	}
 
-	subnet, gateway, err := b.subnet()
+	subnet, gateway, dns, err := b.subnetFor(networkID)
 	if err != nil {
 		return nil, err
 	}
+	_ = dns
 
 	var ip string
 	err = b.withClient(func(c *ovn.Client) error {
@@ -218,10 +347,18 @@ func (b *OVNBackend) AllocateVMNetwork(vmID, macAddress string) (*VMNetworkInfo,
 			return err
 		}
 
-		// DHCP: allocate an address from the subnet, then pin it.
-		ip, err = ovn.AllocateSubnetIP(subnet, b.allocatedIPs(ctx, c, network))
-		if err != nil {
-			return err
+		// DHCP: use a static IP if the user provided one, otherwise allocate
+		// from the subnet, skipping in-use addresses and the gateway.
+		b.mu.RLock()
+		staticIP := b.vmStaticIP[vmID]
+		b.mu.RUnlock()
+		if staticIP != "" {
+			ip = staticIP
+		} else {
+			ip, err = ovn.AllocateSubnetIP(subnet, b.allocatedIPs(ctx, c, network))
+			if err != nil {
+				return err
+			}
 		}
 		// The port's addresses must carry the allocated address, not a
 		// placeholder, or OVN's port security has nothing to pin.
@@ -242,7 +379,7 @@ func (b *OVNBackend) AllocateVMNetwork(vmID, macAddress string) (*VMNetworkInfo,
 			Switch:     ovn.GatewaySwitchName(network),
 			CIDR:       subnet,
 			Gateway:    gateway,
-			DNSServers: b.dnsServers(),
+			DNSServers: dns,
 		}, network)
 		if err != nil {
 			return err
@@ -275,6 +412,8 @@ func (b *OVNBackend) AllocateVMNetwork(vmID, macAddress string) (*VMNetworkInfo,
 	b.vmPorts[vmID] = ovn.LogicalPortName(vmID)
 	b.vmMACs[vmID] = macAddress
 	b.vmAddresses[vmID] = ip
+	b.vmNetwork[vmID] = networkID
+	delete(b.vmStaticIP, vmID)
 	b.mu.Unlock()
 
 	return &VMNetworkInfo{
@@ -304,11 +443,18 @@ func (b *OVNBackend) allocatedIPs(ctx context.Context, c *ovn.Client, network st
 // ReleaseVMNetwork removes a VM's logical port and everything bound to it.
 func (b *OVNBackend) ReleaseVMNetwork(vmID, macAddress string) error {
 	ctx := context.Background()
-	network := b.networkName()
 
 	b.mu.RLock()
+	networkID := b.vmNetwork[vmID]
 	portName := b.vmPorts[vmID]
 	b.mu.RUnlock()
+	if networkID == "" {
+		networkID = "default"
+	}
+	network := b.networkDef(networkID).Name
+	if network == "" {
+		network = networkID
+	}
 	if portName == "" {
 		portName = ovn.LogicalPortName(vmID)
 	}
@@ -338,6 +484,7 @@ func (b *OVNBackend) ReleaseVMNetwork(vmID, macAddress string) error {
 	delete(b.vmMACs, vmID)
 	delete(b.vmAddresses, vmID)
 	delete(b.vmFloating, vmID)
+	delete(b.vmNetwork, vmID)
 	b.mu.Unlock()
 
 	_ = network
@@ -726,4 +873,86 @@ func (b *OVNBackend) floatingInDB(ctx context.Context, vmID, externalIP string) 
 		return nil
 	})
 	return found, err
+}
+
+// AttachPortForward creates a DNAT rule mapping externalIP:externalPort to the
+// VM's internal address:internalPort.
+func (b *OVNBackend) AttachPortForward(pf PortForward) error {
+	if pf.VMID == "" || pf.ExternalIP == "" || pf.ExternalPort == 0 || pf.InternalPort == 0 {
+		return fmt.Errorf("network: vm, external address, and both ports are required")
+	}
+	ctx := context.Background()
+
+	internalIP, _, err := b.vmEndpoint(ctx, pf.VMID)
+	if err != nil {
+		return err
+	}
+
+	b.mu.RLock()
+	networkID := b.vmNetwork[pf.VMID]
+	mac := b.vmMACs[pf.VMID]
+	b.mu.RUnlock()
+	if networkID == "" {
+		networkID = "default"
+	}
+	router := ovn.GatewayRouterName(b.networkDef(networkID).Name)
+
+	proto := pf.Protocol
+	if proto == "" {
+		proto = "tcp"
+	}
+
+	err = b.withClient(func(c *ovn.Client) error {
+		return c.EnsurePortForward(ctx, ovn.PortForwardSpec{
+			ExternalIP:   pf.ExternalIP,
+			ExternalPort: pf.ExternalPort,
+			InternalIP:   internalIP,
+			InternalPort: pf.InternalPort,
+			Protocol:     proto,
+			MAC:          mac,
+			Router:       router,
+			VMID:         pf.VMID,
+		})
+	})
+	if err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	b.vmPortForwards[pf.VMID] = append(b.vmPortForwards[pf.VMID], pf)
+	b.mu.Unlock()
+	return nil
+}
+
+// DetachPortForward removes a port forward rule.
+func (b *OVNBackend) DetachPortForward(vmID, externalIP string, externalPort int) error {
+	ctx := context.Background()
+
+	err := b.withClient(func(c *ovn.Client) error {
+		return c.DropPortForward(ctx, vmID, externalIP, externalPort)
+	})
+	if err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	var kept []PortForward
+	for _, pf := range b.vmPortForwards[vmID] {
+		if pf.ExternalIP == externalIP && pf.ExternalPort == externalPort {
+			continue
+		}
+		kept = append(kept, pf)
+	}
+	b.vmPortForwards[vmID] = kept
+	b.mu.Unlock()
+	return nil
+}
+
+// ListPortForwards returns the port forwards for a VM.
+func (b *OVNBackend) ListPortForwards(vmID string) []PortForward {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	out := make([]PortForward, len(b.vmPortForwards[vmID]))
+	copy(out, b.vmPortForwards[vmID])
+	return out
 }

@@ -65,6 +65,7 @@ type NetworkConfig struct {
 
 // NetworkInfo contains network details for a running microVM
 type NetworkInfo struct {
+	NetworkID        string      `json:"network_id,omitempty"` // VPC/network this VM belongs to
 	IPAddress        string      `json:"ip_address"`
 	IPv6Address      string      `json:"ipv6_address,omitempty"`
 	IPv6Gateway      string      `json:"ipv6_gateway,omitempty"`

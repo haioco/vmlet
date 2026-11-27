@@ -573,6 +573,7 @@ type ImageConfig struct {
 type NetworkConfig struct {
 	Mode             string                  `json:"mode,omitempty"`              // Alias for AssignmentMethod (preferred)
 	AssignmentMethod string                  `json:"assignment_method,omitempty"` // Legacy field name
+	NetworkID        string                  `json:"network_id,omitempty"`        // VPC/network to attach to
 	EnableSSH        bool                    `json:"enable_ssh,omitempty"`
 	MACAddress       string                  `json:"mac_address,omitempty"` // Custom MAC address
 	IPAddress        string                  `json:"ip_address,omitempty"`  // Custom IP address
@@ -1047,6 +1048,14 @@ func main() {
 	server.vmStateStorage = sqliteStorage
 	fmt.Printf("✅ SQLite storage initialized: %s\n", dbPath)
 
+	// Wire any persisted VPCs into the OVN backend.
+	if nets, err := sqliteStorage.LoadAllNetworks(); err == nil && len(nets) > 0 {
+		if b, ok := server.manager.GetNetworkBackend().(*network.OVNBackend); ok && b != nil {
+			b.SetNetworks(toOVNNetworks(nets))
+			fmt.Printf("🌐 Loaded %d network(s) into OVN backend\n", len(nets))
+		}
+	}
+
 	// Migrate from JSON if exists
 	if _, err := os.Stat(persistFile); err == nil {
 		fmt.Println("📂 Migrating VM state from JSON to SQLite...")
@@ -1310,6 +1319,17 @@ func main() {
 	router.HandleFunc("/vms/{id}/floating-ip", server.attachFloatingIPHandler).Methods("POST")
 	router.HandleFunc("/vms/{id}/floating-ip", server.listFloatingIPsHandler).Methods("GET")
 	router.HandleFunc("/vms/{id}/floating-ip/{address}", server.detachFloatingIPHandler).Methods("DELETE")
+
+	// Network (VPC) management endpoints
+	router.HandleFunc("/networks", server.createNetworkHandler).Methods("POST")
+	router.HandleFunc("/networks", server.listNetworksHandler).Methods("GET")
+	router.HandleFunc("/networks/{id}", server.getNetworkHandler).Methods("GET")
+	router.HandleFunc("/networks/{id}", server.deleteNetworkHandler).Methods("DELETE")
+
+	// Port forwarding endpoints
+	router.HandleFunc("/vms/{id}/port-forward", server.attachPortForwardHandler).Methods("POST")
+	router.HandleFunc("/vms/{id}/port-forwards", server.listPortForwardsHandler).Methods("GET")
+	router.HandleFunc("/vms/{id}/port-forward/{external_ip}/{port}", server.detachPortForwardHandler).Methods("DELETE")
 	// Snapshot management endpoints (ZFS-backed VMs only)
 	router.HandleFunc("/vms/{id}/snapshots", server.createSnapshotHandler).Methods("POST")
 	router.HandleFunc("/vms/{id}/snapshots", server.listSnapshotsHandler).Methods("GET")
@@ -1857,8 +1877,9 @@ func (s *HTTPServer) createVMHandler(w http.ResponseWriter, r *http.Request) {
 		},
 		Network: models.NetworkInfo{
 			AssignmentMethod: networkMode,
+			NetworkID:        req.NetworkConfig.NetworkID,
 			MACAddress:       req.NetworkConfig.MACAddress, // Custom MAC from request
-			IPAddress:        req.NetworkConfig.IPAddress,  // Custom IP from request
+			IPAddress:        req.NetworkConfig.IPAddress,  // Custom IP from request (static IP for OVN)
 			IPv6Address:      req.NetworkConfig.IPv6Address,
 			IPv6Gateway:      req.NetworkConfig.IPv6Gateway,
 			IPv6PrefixLength: req.NetworkConfig.IPv6PrefixLength,
@@ -8309,4 +8330,251 @@ func (s *HTTPServer) detachFloatingIPHandler(w http.ResponseWriter, r *http.Requ
 		"vm_id":   vmID,
 		"address": vars["address"],
 	})
+}
+
+// --- VPC / Network endpoints ---
+
+// createNetworkHandler: POST /networks
+func (s *HTTPServer) createNetworkHandler(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name       string   `json:"name"`
+		CIDR       string   `json:"cidr"`
+		Gateway    string   `json:"gateway"`
+		DNSServers []string `json:"dns_servers"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	if req.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+	if req.CIDR == "" {
+		http.Error(w, "cidr is required", http.StatusBadRequest)
+		return
+	}
+
+	nw := &models.Network{
+		ID:         uuid.New().String(),
+		Name:       req.Name,
+		CIDR:       req.CIDR,
+		Gateway:    req.Gateway,
+		DNSServers: req.DNSServers,
+		CreatedAt:  time.Now(),
+	}
+	if nw.Gateway == "" {
+		_, ipNet, err := net.ParseCIDR(req.CIDR)
+		if err == nil {
+			ip := make(net.IP, len(ipNet.IP))
+			copy(ip, ipNet.IP)
+			ip[len(ip)-1] |= 1
+			nw.Gateway = ip.String()
+		}
+	}
+
+	if s.vmStateStorage != nil {
+		if err := s.vmStateStorage.SaveNetwork(nw); err != nil {
+			http.Error(w, fmt.Sprintf("failed to save network: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Wire into OVN backend if running
+	if b, ok := s.manager.GetNetworkBackend().(*network.OVNBackend); ok && b != nil {
+		b.SetNetworks(toOVNNetworks(appendNetworks(s, nw)))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(nw)
+}
+
+// listNetworksHandler: GET /networks
+func (s *HTTPServer) listNetworksHandler(w http.ResponseWriter, r *http.Request) {
+	var nets []*models.Network
+	if s.vmStateStorage != nil {
+		loaded, err := s.vmStateStorage.LoadAllNetworks()
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to load networks: %v", err), http.StatusInternalServerError)
+			return
+		}
+		nets = loaded
+	}
+	if nets == nil {
+		nets = []*models.Network{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(nets)
+}
+
+// getNetworkHandler: GET /networks/{id}
+func (s *HTTPServer) getNetworkHandler(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	if s.vmStateStorage == nil {
+		http.Error(w, "storage unavailable", http.StatusInternalServerError)
+		return
+	}
+	net, err := s.vmStateStorage.LoadNetwork(id)
+	if err != nil {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(net)
+}
+
+// deleteNetworkHandler: DELETE /networks/{id}
+func (s *HTTPServer) deleteNetworkHandler(w http.ResponseWriter, r *http.Request) {
+	id := mux.Vars(r)["id"]
+	if s.vmStateStorage != nil {
+		if err := s.vmStateStorage.DeleteNetwork(id); err != nil {
+			http.Error(w, fmt.Sprintf("failed to delete network: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"message": "network deleted", "id": id})
+}
+
+// --- Port forwarding endpoints ---
+
+// attachPortForwardHandler: POST /vms/{id}/port-forward
+func (s *HTTPServer) attachPortForwardHandler(w http.ResponseWriter, r *http.Request) {
+	vmID := mux.Vars(r)["id"]
+	if _, ok := s.getVM(vmID); !ok {
+		http.Error(w, "VM not found", http.StatusNotFound)
+		return
+	}
+
+	b := s.ovnFloatingFor()
+	if b == nil {
+		http.Error(w, "port forwarding requires MICROVM_NETWORK_BACKEND=ovn", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		ExternalIP   string `json:"external_ip"`
+		ExternalPort int    `json:"external_port"`
+		InternalPort int    `json:"internal_port"`
+		Protocol     string `json:"protocol"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+	if req.ExternalIP == "" || req.ExternalPort == 0 || req.InternalPort == 0 {
+		http.Error(w, "external_ip, external_port, and internal_port are required", http.StatusBadRequest)
+		return
+	}
+	if req.Protocol == "" {
+		req.Protocol = "tcp"
+	}
+
+	pf := network.PortForward{
+		VMID:         vmID,
+		ExternalIP:   req.ExternalIP,
+		ExternalPort: req.ExternalPort,
+		InternalPort: req.InternalPort,
+		Protocol:     req.Protocol,
+	}
+	if err := b.AttachPortForward(pf); err != nil {
+		http.Error(w, fmt.Sprintf("failed to attach port forward: %v", err), http.StatusUnprocessableEntity)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message":        "port forward attached",
+		"vm_id":          vmID,
+		"external_ip":    req.ExternalIP,
+		"external_port":  req.ExternalPort,
+		"internal_port":  req.InternalPort,
+		"protocol":       req.Protocol,
+	})
+}
+
+// listPortForwardsHandler: GET /vms/{id}/port-forwards
+func (s *HTTPServer) listPortForwardsHandler(w http.ResponseWriter, r *http.Request) {
+	vmID := mux.Vars(r)["id"]
+	if _, ok := s.getVM(vmID); !ok {
+		http.Error(w, "VM not found", http.StatusNotFound)
+		return
+	}
+	b := s.ovnFloatingFor()
+	if b == nil {
+		http.Error(w, "port forwarding requires MICROVM_NETWORK_BACKEND=ovn", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(b.ListPortForwards(vmID))
+}
+
+// detachPortForwardHandler: DELETE /vms/{id}/port-forward/{external_ip}/{port}
+func (s *HTTPServer) detachPortForwardHandler(w http.ResponseWriter, r *http.Request) {
+	vmID := mux.Vars(r)["id"]
+	if _, ok := s.getVM(vmID); !ok {
+		http.Error(w, "VM not found", http.StatusNotFound)
+		return
+	}
+	b := s.ovnFloatingFor()
+	if b == nil {
+		http.Error(w, "port forwarding requires MICROVM_NETWORK_BACKEND=ovn", http.StatusBadRequest)
+		return
+	}
+	vars := mux.Vars(r)
+	externalIP := vars["external_ip"]
+	portStr := vars["port"]
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		http.Error(w, "invalid port", http.StatusBadRequest)
+		return
+	}
+	if err := b.DetachPortForward(vmID, externalIP, port); err != nil {
+		http.Error(w, fmt.Sprintf("failed to detach port forward: %v", err), http.StatusUnprocessableEntity)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{"message": "port forward detached"})
+}
+
+// toOVNNetworks converts models.Network to network.OVNNetwork.
+func toOVNNetworks(nets []*models.Network) []*network.OVNNetwork {
+	out := make([]*network.OVNNetwork, 0, len(nets))
+	for _, n := range nets {
+		out = append(out, &network.OVNNetwork{
+			ID:         n.ID,
+			Name:       n.Name,
+			CIDR:       n.CIDR,
+			Gateway:    n.Gateway,
+			DNSServers: n.DNSServers,
+		})
+	}
+	return out
+}
+
+// appendNetworks is a helper to build the network list for SetNetworks.
+func appendNetworks(s *HTTPServer, net *models.Network) []*models.Network {
+	var nets []*models.Network
+	if s.vmStateStorage != nil {
+		loaded, err := s.vmStateStorage.LoadAllNetworks()
+		if err == nil {
+			nets = loaded
+		}
+	}
+	// Ensure the new network is included
+	found := false
+	for _, n := range nets {
+		if n.ID == net.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		nets = append(nets, net)
+	}
+	return nets
 }

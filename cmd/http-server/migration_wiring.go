@@ -167,6 +167,7 @@ func (s *HTTPServer) buildMigrationHandler() (*migration.Handler, error) {
 				vm.Network.IPv6Address, // preserved identity
 				vm.Network.IPv6Gateway,
 				vm.Network.IPv6PrefixLength,
+				vm.Network.NetworkID,
 			)
 			if err != nil {
 				return "", err
