@@ -105,6 +105,10 @@ type Manager struct {
 	configGenerator *ConfigGenerator
 	imageManager    *images.ImageManager
 	enhancedNetwork network.Backend
+	// ovnNetwork is the OVN overlay, independently of enhancedNetwork. It is
+	// non-nil whenever this host can serve OVN VMs, so a node can run the
+	// bridge/NAT backend as its default and still offer "ovn" per VM.
+	ovnNetwork *network.OVNBackend
 	// backendMu guards reads of enhancedNetwork after construction.
 	backendMu       sync.RWMutex
 	bootValidator   *validation.BootValidator
@@ -136,11 +140,15 @@ type Config struct {
 	NetworkBridgeName string `json:"network_bridge_name"`
 	NetworkBridgeIP   string `json:"network_bridge_ip"`
 	NetworkBridgeCIDR string `json:"network_bridge_cidr"`
-	HostInterface     string `json:"host_interface"`
-	DisableDHCP       bool   `json:"disable_dhcp"`
-	ManageNAT         bool   `json:"manage_nat"`
-	SSHPortStart      int    `json:"ssh_port_start"`
-	SSHPortEnd        int    `json:"ssh_port_end"`
+	// OVNNetworkIP and OVNNetworkCIDR are the OVN overlay subnet. Empty means
+	// "same as the bridge fields", which is what a single-backend host wants.
+	OVNNetworkIP   string `json:"ovn_network_ip"`
+	OVNNetworkCIDR string `json:"ovn_network_cidr"`
+	HostInterface  string `json:"host_interface"`
+	DisableDHCP    bool   `json:"disable_dhcp"`
+	ManageNAT      bool   `json:"manage_nat"`
+	SSHPortStart   int    `json:"ssh_port_start"`
+	SSHPortEnd     int    `json:"ssh_port_end"`
 }
 
 // calculateVMIP calculates a consistent IP address for a VM based on its ID
@@ -299,6 +307,8 @@ func NewManager(config *Config, reservationMgr *network.ReservationManager) (*Ma
 		BridgeName:    bridgeName,
 		BridgeIP:      bridgeIP,
 		BridgeCIDR:    bridgeCIDR,
+		OverlayIP:     config.OVNNetworkIP,
+		OverlayCIDR:   config.OVNNetworkCIDR,
 		HostInterface: hostIf,
 		DHCPRange: network.DHCPRange{
 			Start: "192.168.100.10",
@@ -318,12 +328,18 @@ func NewManager(config *Config, reservationMgr *network.ReservationManager) (*Ma
 		return nil, fmt.Errorf("failed to initialize network backend: %w", err)
 	}
 
+	// The OVN overlay is independent of the default backend: a host whose
+	// default backend is the bridge can still serve OVN-mode VMs, provided the
+	// OVN packages and the Northbound socket are there. Probe for it rather
+	// than requiring it, so a bridge-only node starts cleanly.
+	ovnNetwork := probeOVNBackend(enhancedNetwork, networkConfig)
+
 	// The OVN backend owns the logical topology; hand its allocator to the
 	// network manager so an OVN-mode VM gets a logical port, a DHCP
 	// reservation and port security, not a placeholder address.
-	if ovnBackend, ok := enhancedNetwork.(*network.OVNBackend); ok {
+	if ovnNetwork != nil {
 		networkManager.SetOVNAllocator(func(vmID, mac, networkID string) (*models.NetworkInfo, error) {
-			info, err := ovnBackend.AllocateVMNetwork(vmID, mac, networkID)
+			info, err := ovnNetwork.AllocateVMNetwork(vmID, mac, networkID)
 			if err != nil {
 				return nil, err
 			}
@@ -356,6 +372,7 @@ func NewManager(config *Config, reservationMgr *network.ReservationManager) (*Ma
 
 	manager := &Manager{
 		config:          config,
+		ovnNetwork:      ovnNetwork,
 		networkManager:  networkManager,
 		storageManager:  storageManager,
 		sshKeyManager:   sshKeyManager,
@@ -440,16 +457,20 @@ func (m *Manager) CreateMicroVM(ctx context.Context, microvm *models.MicroVMInst
 		// For OVN, record the static IP on the backend before allocation so
 		// the allocator uses it instead of auto-assigning.
 		if microvm.Network.AssignmentMethod == models.NetworkModeOVN {
-			if ovnBackend, ok := m.enhancedNetwork.(*network.OVNBackend); ok && ovnBackend != nil {
-				if staticIP != "" {
-					ovnBackend.SetStaticIP(microvm.ID, staticIP)
-				}
-				// Staged custom rules must be re-applied on every allocation, or
-				// a VM booted before its rules were set would come back up
-				// without them.
-				if len(microvm.Network.SecurityRules) > 0 {
-					ovnBackend.SetSecurityRules(microvm.ID, microvm.Network.SecurityRules)
-				}
+			// Without the allocator the VM would boot with a placeholder
+			// address and a warning, which is how a bridge-only node silently
+			// produces an unreachable VM. Refuse instead.
+			if err := m.CheckNetworkMode(models.NetworkModeOVN); err != nil {
+				return err
+			}
+			if staticIP != "" {
+				m.ovnNetwork.SetStaticIP(microvm.ID, staticIP)
+			}
+			// Staged custom rules must be re-applied on every allocation, or
+			// a VM booted before its rules were set would come back up
+			// without them.
+			if len(microvm.Network.SecurityRules) > 0 {
+				m.ovnNetwork.SetSecurityRules(microvm.ID, microvm.Network.SecurityRules)
 			}
 		}
 
@@ -1898,6 +1919,17 @@ func (m *Manager) Shutdown() error {
 	// Shutdown enhanced network manager
 	if err := m.enhancedNetwork.Shutdown(); err != nil {
 		errors = append(errors, fmt.Errorf("failed to shutdown enhanced network: %w", err))
+	}
+
+	// The OVN overlay is a second backend: closing it releases the Northbound
+	// connection. It is skipped when it *is* the default backend, which
+	// Shutdown above already handled.
+	if m.ovnNetwork != nil {
+		if b, ok := m.enhancedNetwork.(*network.OVNBackend); !ok || b != m.ovnNetwork {
+			if err := m.ovnNetwork.Shutdown(); err != nil {
+				errors = append(errors, fmt.Errorf("failed to shutdown OVN backend: %w", err))
+			}
+		}
 	}
 
 	// Clean up image cache
@@ -3911,4 +3943,81 @@ func parseBandwidthString(s string) int {
 	}
 
 	return 0
+}
+
+// probeOVNBackend returns the OVN backend this host can use: the selected
+// one when it already is OVN, otherwise a separately constructed and
+// initialized instance. A failure is not fatal — the node just has no
+// overlay, and SupportedNetworkModes reports accordingly.
+func probeOVNBackend(selected network.Backend, config *network.NetworkConfig) *network.OVNBackend {
+	if b, ok := selected.(*network.OVNBackend); ok && b != nil {
+		return b
+	}
+	if config == nil {
+		return nil
+	}
+	// The overlay needs its own integration bridge, not the bridge backend's
+	// NAT bridge (which defaults to lxdbr0 or fc-br0). Give the OVN backend a
+	// copy so the two do not fight over the same name.
+	ovnConfig := *config
+	ovnConfig.BridgeName = network.IntegrationBridge
+	b, err := network.NewOVNBackend(&ovnConfig)
+	if err != nil {
+		return nil
+	}
+	ovnBackend, ok := b.(*network.OVNBackend)
+	if !ok || ovnBackend == nil {
+		return nil
+	}
+	if err := ovnBackend.Initialize(); err != nil {
+		fmt.Printf("ℹ️  OVN overlay unavailable on this host (%v); mode \"ovn\" will be refused\n", err)
+		return nil
+	}
+	fmt.Printf("🌐 OVN overlay available alongside the %q backend\n", network.SelectBackendName(config))
+	return ovnBackend
+}
+
+// GetOVNBackend returns the OVN overlay backend, or nil when this host cannot
+// serve OVN VMs. Every caller that used to type-assert GetNetworkBackend for
+// the OVN specifics must use this, so a bridge-default node with an overlay
+// still works.
+func (m *Manager) GetOVNBackend() *network.OVNBackend {
+	m.backendMu.RLock()
+	defer m.backendMu.RUnlock()
+	return m.ovnNetwork
+}
+
+// SupportedNetworkModes reports the network modes this host can actually
+// serve right now. OVN is included only when the overlay is up, so a
+// bridge-only node does not advertise a mode that would fail at create time.
+func (m *Manager) SupportedNetworkModes() []string {
+	modes := []string{
+		string(models.NetworkModeNAT),
+		string(models.NetworkModeDHCP),
+		string(models.NetworkModeMACVLAN),
+		string(models.NetworkModeIPv6Only),
+	}
+	if m.GetOVNBackend() != nil {
+		modes = append(modes, string(models.NetworkModeOVN))
+	}
+	return modes
+}
+
+// CheckNetworkMode reports whether this host can serve a mode. Only OVN is
+// conditional: every other mode is realized by the host's own bridges and is
+// always available.
+func (m *Manager) CheckNetworkMode(mode models.NetworkMode) error {
+	if mode == models.NetworkModeOVN && m.GetOVNBackend() == nil {
+		return fmt.Errorf("network: mode %q is not available on this host: no OVN backend (install openvswitch-switch and ovn-central/ovn-host, and set MICROVM_OVN_NB_ENDPOINT if the Northbound DB is remote)", string(mode))
+	}
+	return nil
+}
+
+// DefaultNetworkMode is the mode a VM gets when the request does not pick
+// one: the OVN overlay when this host is an OVN node, otherwise NAT.
+func (m *Manager) DefaultNetworkMode() models.NetworkMode {
+	if _, ok := m.enhancedNetwork.(*network.OVNBackend); ok {
+		return models.NetworkModeOVN
+	}
+	return models.NetworkModeNAT
 }

@@ -903,9 +903,14 @@ func main() {
 		networkBridge = flag.String("network-bridge", getEnvOrDefault("MICROVM_NETWORK_BRIDGE", "lxdbr0"), "Network bridge name")
 		networkIP     = flag.String("network-ip", getEnvOrDefault("MICROVM_NETWORK_IP", "10.130.146.1"), "Network bridge IP")
 		networkCIDR   = flag.String("network-cidr", getEnvOrDefault("MICROVM_NETWORK_CIDR", "10.130.146.0/24"), "Network CIDR")
-		disableDHCP   = flag.Bool("disable-dhcp", getEnvBool("MICROVM_DISABLE_DHCP", true), "Disable internal DHCP (use external dnsmasq)")
-		manageNAT     = flag.Bool("manage-nat", getEnvBool("MICROVM_MANAGE_NAT", false), "Manage NAT rules (false if bridge handles it)")
-		hostsFileDir  = flag.String("hosts-file-dir", getEnvOrDefault("MICROVM_HOSTS_DIR", "/var/snap/lxd/common/lxd/networks/lxdbr0"), "Directory for dnsmasq hosts file")
+
+		// The OVN overlay subnet. Only needed on a host that runs both backends,
+		// where it must not overlap the bridge subnet above.
+		ovnNetworkIP   = flag.String("ovn-network-ip", getEnvOrDefault(network.OverlayIPEnvVar, ""), "OVN overlay gateway IP (empty: same as -network-ip)")
+		ovnNetworkCIDR = flag.String("ovn-network-cidr", getEnvOrDefault(network.OverlayCIDREnvVar, ""), "OVN overlay CIDR (empty: same as -network-cidr)")
+		disableDHCP    = flag.Bool("disable-dhcp", getEnvBool("MICROVM_DISABLE_DHCP", true), "Disable internal DHCP (use external dnsmasq)")
+		manageNAT      = flag.Bool("manage-nat", getEnvBool("MICROVM_MANAGE_NAT", false), "Manage NAT rules (false if bridge handles it)")
+		hostsFileDir   = flag.String("hosts-file-dir", getEnvOrDefault("MICROVM_HOSTS_DIR", "/var/snap/lxd/common/lxd/networks/lxdbr0"), "Directory for dnsmasq hosts file")
 	)
 	flag.Parse()
 
@@ -960,10 +965,14 @@ func main() {
 		NetworkBridgeName: *networkBridge,
 		NetworkBridgeIP:   *networkIP,
 		NetworkBridgeCIDR: *networkCIDR,
-		DisableDHCP:       *disableDHCP, // Use external dnsmasq on lxdbr0
-		ManageNAT:         *manageNAT,   // LXD manages NAT
-		SSHPortStart:      2200,
-		SSHPortEnd:        2299,
+		// Empty means "same as the bridge fields", which keeps a single-backend
+		// host configured exactly as before.
+		OVNNetworkCIDR: *ovnNetworkCIDR,
+		OVNNetworkIP:   *ovnNetworkIP,
+		DisableDHCP:    *disableDHCP, // Use external dnsmasq on lxdbr0
+		ManageNAT:      *manageNAT,   // LXD manages NAT
+		SSHPortStart:   2200,
+		SSHPortEnd:     2299,
 	}
 
 	// Initialize ReservationManager for MAC/IP reservations and anti-spoofing
@@ -1051,7 +1060,7 @@ func main() {
 
 	// Wire any persisted VPCs into the OVN backend.
 	if nets, err := sqliteStorage.LoadAllNetworks(); err == nil && len(nets) > 0 {
-		if b, ok := server.manager.GetNetworkBackend().(*network.OVNBackend); ok && b != nil {
+		if b := server.manager.GetOVNBackend(); b != nil {
 			b.SetNetworks(toOVNNetworks(nets))
 			fmt.Printf("🌐 Loaded %d network(s) into OVN backend\n", len(nets))
 		}
@@ -1324,6 +1333,7 @@ func main() {
 	// Network (VPC) management endpoints
 	router.HandleFunc("/networks", server.createNetworkHandler).Methods("POST")
 	router.HandleFunc("/networks", server.listNetworksHandler).Methods("GET")
+	router.HandleFunc("/network-modes", server.listNetworkModesHandler).Methods("GET")
 	router.HandleFunc("/networks/{id}", server.getNetworkHandler).Methods("GET")
 	router.HandleFunc("/networks/{id}", server.deleteNetworkHandler).Methods("DELETE")
 
@@ -1693,6 +1703,28 @@ func (s *HTTPServer) setQuotaHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// pickLegacyNetworkMode is the pre-overlay auto-detect: DHCP mode for an
+// external bridge, NAT otherwise.
+func pickLegacyNetworkMode() models.NetworkMode {
+	// Auto-detect network mode based on bridge configuration
+	// If MICROVM_DHCP_BRIDGE or MICROVM_NETWORK_BRIDGE is set to an external bridge (lxdbr0, br0, virbr0),
+	// use DHCP mode. Otherwise, use NAT mode with internal bridge.
+	dhcpBridge := os.Getenv("MICROVM_DHCP_BRIDGE")
+	if dhcpBridge == "" {
+		dhcpBridge = os.Getenv("MICROVM_NETWORK_BRIDGE")
+	}
+
+	fmt.Printf("   🔍 DEBUG: MICROVM_DHCP_BRIDGE='%s'\n", dhcpBridge)
+
+	// Check if using external bridge (not fc-br0/microvm-br0 managed bridges)
+	if dhcpBridge != "" && dhcpBridge != "fc-br0" && dhcpBridge != "microvm-br0" {
+		fmt.Printf("   ✅ Auto-detected DHCP mode (external bridge: %s)\n", dhcpBridge)
+		return models.NetworkModeDHCP // Use DHCP for external bridges
+	}
+	fmt.Printf("   ℹ️  Using NAT mode (internal bridge or no bridge configured)\n")
+	return models.NetworkModeNAT // default to static mode for internal bridges
+}
+
 func (s *HTTPServer) createVMHandler(w http.ResponseWriter, r *http.Request) {
 	// Read the raw request body for debugging
 	bodyBytes, err := io.ReadAll(r.Body)
@@ -1810,34 +1842,27 @@ func (s *HTTPServer) createVMHandler(w http.ResponseWriter, r *http.Request) {
 			networkMode = models.NetworkModeNAT
 		}
 	} else {
-		// Auto-detect network mode based on bridge configuration
-		// If MICROVM_DHCP_BRIDGE or MICROVM_NETWORK_BRIDGE is set to an external bridge (lxdbr0, br0, virbr0),
-		// use DHCP mode. Otherwise, use NAT mode with internal bridge.
-		dhcpBridge := os.Getenv("MICROVM_DHCP_BRIDGE")
-		if dhcpBridge == "" {
-			dhcpBridge = os.Getenv("MICROVM_NETWORK_BRIDGE")
-		}
-
-		fmt.Printf("   🔍 DEBUG: MICROVM_DHCP_BRIDGE='%s'\n", dhcpBridge)
-
-		// Check if using external bridge (not fc-br0/microvm-br0 managed bridges)
-		if dhcpBridge != "" && dhcpBridge != "fc-br0" && dhcpBridge != "microvm-br0" {
-			networkMode = models.NetworkModeDHCP // Use DHCP for external bridges
-			fmt.Printf("   ✅ Auto-detected DHCP mode (external bridge: %s)\n", dhcpBridge)
+		// An OVN node prefers the overlay; a bridge node keeps the existing
+		// auto-detect below. Both are per-VM overridable by "mode".
+		if s.manager != nil && s.manager.DefaultNetworkMode() == models.NetworkModeOVN {
+			networkMode = models.NetworkModeOVN
+			fmt.Printf("   ℹ️  Using OVN mode (this host runs the overlay by default)\n")
 		} else {
-			networkMode = models.NetworkModeNAT // default to static mode for internal bridges
-			fmt.Printf("   ℹ️  Using NAT mode (internal bridge or no bridge configured)\n")
+			networkMode = pickLegacyNetworkMode()
 		}
 	}
 
-	fmt.Printf("   Network mode: %s\n", networkMode)
-
-	// Validate and set defaults
+	// Refuse a mode this host cannot serve, rather than booting a VM that
+	// cannot reach anyone. The API answers 400 here; a VM created another way
+	// fails at the manager with the same reason.
+	if s.manager != nil {
+		if err := s.manager.CheckNetworkMode(networkMode); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 	if vcpus == 0 {
 		vcpus = 1
-	}
-	if memoryMB == 0 {
-		memoryMB = 512 // Increase default for better compatibility
 	}
 	if storageMB == 0 {
 		// Set default based on image type
@@ -8228,10 +8253,7 @@ func (s *HTTPServer) ovnFloatingFor() *network.OVNBackend {
 	if s.manager == nil {
 		return nil
 	}
-	if b, ok := s.manager.GetNetworkBackend().(*network.OVNBackend); ok {
-		return b
-	}
-	return nil
+	return s.manager.GetOVNBackend()
 }
 
 // attachFloatingIPHandler maps a public address onto a VM on the OVN overlay:
@@ -8382,7 +8404,7 @@ func (s *HTTPServer) createNetworkHandler(w http.ResponseWriter, r *http.Request
 	}
 
 	// Wire into OVN backend if running
-	if b, ok := s.manager.GetNetworkBackend().(*network.OVNBackend); ok && b != nil {
+	if b := s.manager.GetOVNBackend(); b != nil {
 		b.SetNetworks(toOVNNetworks(appendNetworks(s, nw)))
 	}
 
@@ -8649,6 +8671,27 @@ func (s *HTTPServer) getSecurityRulesHandler(w http.ResponseWriter, r *http.Requ
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(rules)
+}
+
+// listNetworkModesHandler reports the network modes this host can serve
+// right now, so a client can offer only the choices that will work. "ovn" is
+// present when the overlay is up, even when the default backend is the
+// bridge: the two coexist since the overlay probe.
+func (s *HTTPServer) listNetworkModesHandler(w http.ResponseWriter, r *http.Request) {
+	defaultMode := models.NetworkModeNAT
+	var modes []string
+	if s.manager != nil {
+		modes = s.manager.SupportedNetworkModes()
+		defaultMode = s.manager.DefaultNetworkMode()
+	} else {
+		modes = []string{string(models.NetworkModeNAT)}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"default": string(defaultMode),
+		"modes":   modes,
+	})
 }
 
 // setNetworkFirewallHandler: PUT /networks/{id}/firewall

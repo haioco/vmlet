@@ -263,18 +263,20 @@ func (b *OVNBackend) networkSubnetFor(networkID string) (string, string, []strin
 	n := b.networkDef(networkID)
 	externalIP := strings.TrimSpace(n.ExternalIP)
 
-	// For the default network, fall back to the legacy config fields so
-	// existing deployments and tests that set BridgeCIDR/BridgeIP keep working.
+	// For the default network, fall back to the overlay config fields (which
+	// themselves fall back to the bridge fields) so existing deployments and
+	// tests that set BridgeCIDR/BridgeIP keep working, while a host running
+	// both backends can keep the two subnets disjoint.
 	cidr := strings.TrimSpace(n.CIDR)
 	if cidr == "" && networkID == "default" {
-		cidr = strings.TrimSpace(b.config.BridgeCIDR)
+		cidr = strings.TrimSpace(b.overlayCIDR())
 	}
 	if cidr == "" {
 		cidr = "10.0.0.0/24"
 	}
 	gateway := strings.TrimSpace(n.Gateway)
 	if gateway == "" && networkID == "default" {
-		gateway = strings.TrimSpace(b.config.BridgeIP)
+		gateway = strings.TrimSpace(b.overlayIP())
 	}
 
 	ip, ipNet, err := ovn.ParseCIDR(cidr)
@@ -297,6 +299,33 @@ func (b *OVNBackend) networkSubnetFor(networkID string) (string, string, []strin
 func (b *OVNBackend) subnetFor(networkID string) (string, string, []string, error) {
 	cidr, gw, dns, _, err := b.networkSubnetFor(networkID)
 	return cidr, gw, dns, err
+}
+
+// overlayCIDR is the default network's subnet, preferring the explicit
+// OverlayCIDR, then MICROVM_OVN_NETWORK_CIDR, then the shared bridge fields.
+// The env var is read here as well as in config so a host can override the
+// overlay without touching the NAT subnet when both backends run together.
+func (b *OVNBackend) overlayCIDR() string {
+	b.ensureConfig()
+	if c := strings.TrimSpace(b.config.OverlayCIDR); c != "" {
+		return c
+	}
+	if c := strings.TrimSpace(os.Getenv(OverlayCIDREnvVar)); c != "" {
+		return c
+	}
+	return strings.TrimSpace(b.config.BridgeCIDR)
+}
+
+// overlayIP is the default network's gateway address, resolved the same way.
+func (b *OVNBackend) overlayIP() string {
+	b.ensureConfig()
+	if ip := strings.TrimSpace(b.config.OverlayIP); ip != "" {
+		return ip
+	}
+	if ip := strings.TrimSpace(os.Getenv(OverlayIPEnvVar)); ip != "" {
+		return ip
+	}
+	return strings.TrimSpace(b.config.BridgeIP)
 }
 
 // Initialize connects to the OVN Northbound DB and makes sure the datapath and

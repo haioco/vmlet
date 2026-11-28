@@ -28,10 +28,18 @@ type NetworkConfig struct {
 	BridgeIP      string
 	BridgeCIDR    string
 	HostInterface string
-	DHCPRange     DHCPRange
-	DNSServers    []string
-	SSHPortRange  PortRange
-	ConfigDir     string
+	// OverlayIP and OverlayCIDR are the OVN overlay subnet (the VPC's default
+	// network). They fall back to BridgeIP/BridgeCIDR when empty so a
+	// single-backend install is unchanged, but a host running both backends
+	// should set them: the overlay subnet and the NAT bridge subnet must not
+	// overlap, or two VMs can end up with the same address on different
+	// datapaths. Env: MICROVM_OVN_NETWORK_IP / MICROVM_OVN_NETWORK_CIDR.
+	OverlayIP    string
+	OverlayCIDR  string
+	DHCPRange    DHCPRange
+	DNSServers   []string
+	SSHPortRange PortRange
+	ConfigDir    string
 	// When true, do not start an internal DHCP server (use existing one like lxdbr0)
 	DisableDHCP bool
 	// When false, NAT iptables rules won't be managed (use existing host NAT)

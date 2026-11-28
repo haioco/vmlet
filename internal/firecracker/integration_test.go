@@ -35,7 +35,7 @@ func TestFirecrackerIntegration(t *testing.T) {
 	}
 
 	// Create manager
-	manager, err := NewManager(config)
+	manager, err := NewManager(config, nil)
 	if err != nil {
 		t.Fatalf("Failed to create manager: %v", err)
 	}

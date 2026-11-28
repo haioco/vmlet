@@ -167,6 +167,25 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
   stability of `ovnTAPName`, including ids that sanitise away entirely, 200
   characters long, and a single character.
 
+- OVN beside the bridge, per VM. `MICROVM_NETWORK_BACKEND` is now the
+  default rather than an exclusive choice: the manager builds the OVN overlay
+  alongside the bridge backend whenever the OVS/OVN packages and the
+  Northbound socket are there, and hands the overlay's allocator to the
+  network manager so `network.mode: "ovn"` works on a bridge-default host.
+  The overlay is probed with its own `br-int` bridge name so the two backends
+  never fight over the same one, and the probe is non-fatal: a bridge-only
+  node starts normally, refuses `mode: "ovn"` with a clear reason, and stops
+  advertising it. `GET /network-modes` reports what this host can actually
+  serve; a VM request that omits `network.mode` gets the overlay on an OVN
+  node and NAT elsewhere. The overlay subnet can now differ from the NAT
+  bridge subnet via `MICROVM_OVN_NETWORK_IP`/`_CIDR` (`-ovn-network-ip`,
+  `-ovn-network-cidr`), which it must when both run on one host.
+- The firecracker package's tests compile and run again: `NewManager`'s new
+  reservation-manager argument, `cleanupWithRecovery`'s narrower signature,
+  the `ValidationResult` field renames and the removed version helper were
+  all fixed at the call sites in `enhanced_lifecycle_test.go`,
+  `integration_test.go` and `manager_test.go`.
+
 ## [Unreleased]
 
 ### Added

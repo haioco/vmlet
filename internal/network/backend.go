@@ -15,8 +15,15 @@ const (
 	BackendOVN    = "ovn"
 	BackendNoop   = "noop"
 
-	// BackendEnvVar selects the network backend at process start.
+	// BackendEnvVar selects the default network backend at process start. It is
+	// a default, not an exclusive choice: a host can also run the OVN overlay
+	// alongside the bridge backend and let each VM pick.
 	BackendEnvVar = "MICROVM_NETWORK_BACKEND"
+
+	// OverlayIPEnvVar and OverlayCIDREnvVar set the OVN overlay's subnet, kept
+	// separate from the NAT bridge subnet on a host that runs both.
+	OverlayIPEnvVar   = "MICROVM_OVN_NETWORK_IP"
+	OverlayCIDREnvVar = "MICROVM_OVN_NETWORK_CIDR"
 )
 
 // Backend is the contract every network implementation must satisfy. It covers

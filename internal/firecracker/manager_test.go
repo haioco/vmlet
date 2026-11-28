@@ -24,7 +24,7 @@ func TestNewManager(t *testing.T) {
 		UseJailer:      false,
 	}
 
-	manager, err := NewManager(config)
+	manager, err := NewManager(config, nil)
 	if err != nil {
 		t.Fatalf("Failed to create manager: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestCreateMicroVMValidation(t *testing.T) {
 		UseJailer:      false,
 	}
 
-	manager, err := NewManager(config)
+	manager, err := NewManager(config, nil)
 	if err != nil {
 		t.Fatalf("Failed to create manager: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestGetMicroVMStatus(t *testing.T) {
 		UseJailer:      false,
 	}
 
-	manager, err := NewManager(config)
+	manager, err := NewManager(config, nil)
 	if err != nil {
 		t.Fatalf("Failed to create manager: %v", err)
 	}
