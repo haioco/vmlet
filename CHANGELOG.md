@@ -186,6 +186,15 @@ adheres to [Semantic Versioning](docs/VERSIONING.md).
   all fixed at the call sites in `enhanced_lifecycle_test.go`,
   `integration_test.go` and `manager_test.go`.
 
+- Host-owned bridges: `-bridge-adopt` / `MICROVM_BRIDGE_ADOPT` declares the
+  configured bridge as belonging to the host. vmlet then verifies the bridge
+  exists instead of creating it, never assigns it an address, never starts a
+  DHCP server on it, never writes iptables NAT rules for it, and never deletes
+  it on shutdown. A missing bridge is a startup error rather than a silently
+  unreachable network, and `-manage-nat` now works on any bridge name (it was
+  previously forced on for everything except `lxdbr0`, which would have put a
+  MASQUERADE rule on a bridge carrying real public ranges).
+
 ## [Unreleased]
 
 ### Added

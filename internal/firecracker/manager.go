@@ -147,8 +147,12 @@ type Config struct {
 	HostInterface  string `json:"host_interface"`
 	DisableDHCP    bool   `json:"disable_dhcp"`
 	ManageNAT      bool   `json:"manage_nat"`
-	SSHPortStart   int    `json:"ssh_port_start"`
-	SSHPortEnd     int    `json:"ssh_port_end"`
+	// AdoptBridge declares the configured bridge host-owned: vmlet uses it
+	// as-is and never creates, addresses, NATs or deletes it. See
+	// network.NetworkConfig.AdoptBridge.
+	AdoptBridge  bool `json:"adopt_bridge"`
+	SSHPortStart int  `json:"ssh_port_start"`
+	SSHPortEnd   int  `json:"ssh_port_end"`
 }
 
 // calculateVMIP calculates a consistent IP address for a VM based on its ID
@@ -320,8 +324,13 @@ func NewManager(config *Config, reservationMgr *network.ReservationManager) (*Ma
 			End:   sshEnd,
 		},
 		ConfigDir:   netConfigDir,
-		DisableDHCP: config.DisableDHCP,
-		ManageNAT:   config.ManageNAT || bridgeName != "lxdbr0", // don't manage NAT on lxdbr0 by default
+		DisableDHCP: config.DisableDHCP || config.AdoptBridge,
+		// Don't manage NAT on lxdbr0 by default, and never on an adopted
+		// bridge: its routing belongs to the host and a MASQUERADE rule here
+		// would hijack traffic for every public address on it.
+		ManageNAT: (config.ManageNAT || bridgeName != "lxdbr0") && !config.AdoptBridge,
+
+		AdoptBridge: config.AdoptBridge,
 	}
 	enhancedNetwork, err := network.NewNetworkBackend(networkConfig)
 	if err != nil {
@@ -2998,6 +3007,12 @@ func (m *Manager) ensureBridgeExists(bridgeName string) error {
 	// Check if bridge exists
 	if err := exec.Command("ip", "link", "show", bridgeName).Run(); err == nil {
 		return nil // Bridge already exists
+	}
+
+	// The host owns this bridge; creating a substitute under the same name would
+	// leave VMs on a datapath nothing routes to.
+	if m.config.AdoptBridge {
+		return fmt.Errorf("bridge %s does not exist and -bridge-adopt forbids creating it", bridgeName)
 	}
 
 	// Create bridge

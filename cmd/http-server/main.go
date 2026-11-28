@@ -910,6 +910,7 @@ func main() {
 		ovnNetworkCIDR = flag.String("ovn-network-cidr", getEnvOrDefault(network.OverlayCIDREnvVar, ""), "OVN overlay CIDR (empty: same as -network-cidr)")
 		disableDHCP    = flag.Bool("disable-dhcp", getEnvBool("MICROVM_DISABLE_DHCP", true), "Disable internal DHCP (use external dnsmasq)")
 		manageNAT      = flag.Bool("manage-nat", getEnvBool("MICROVM_MANAGE_NAT", false), "Manage NAT rules (false if bridge handles it)")
+		bridgeAdopt    = flag.Bool("bridge-adopt", getEnvBool("MICROVM_BRIDGE_ADOPT", false), "Bridge is host-owned: use it as-is, never create, address, DHCP, NAT or delete it")
 		hostsFileDir   = flag.String("hosts-file-dir", getEnvOrDefault("MICROVM_HOSTS_DIR", "/var/snap/lxd/common/lxd/networks/lxdbr0"), "Directory for dnsmasq hosts file")
 	)
 	flag.Parse()
@@ -971,6 +972,7 @@ func main() {
 		OVNNetworkIP:   *ovnNetworkIP,
 		DisableDHCP:    *disableDHCP, // Use external dnsmasq on lxdbr0
 		ManageNAT:      *manageNAT,   // LXD manages NAT
+		AdoptBridge:    *bridgeAdopt, // host owns the bridge (adopted haioflash host)
 		SSHPortStart:   2200,
 		SSHPortEnd:     2299,
 	}

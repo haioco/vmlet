@@ -44,6 +44,14 @@ type NetworkConfig struct {
 	DisableDHCP bool
 	// When false, NAT iptables rules won't be managed (use existing host NAT)
 	ManageNAT bool
+	// AdoptBridge marks the named bridge as belonging to the host: vmlet must
+	// use it as-is rather than create, address, DHCP, NAT or delete it. This is
+	// how a host that already bridges public ranges (haioflash's br0 holding a
+	// /24 and a /26) is adopted: the VMs get their public address on the
+	// interface and the host owns all of the routing. Implies ManageNAT=false
+	// and DisableDHCP, both of which would otherwise write host-global rules.
+	// Env/flag: MICROVM_BRIDGE_ADOPT / -bridge-adopt.
+	AdoptBridge bool
 }
 
 // VMNetworkInfo represents network information for a VM
@@ -65,6 +73,7 @@ func NewNetworkManager(config *NetworkConfig) *NetworkManager {
 		CIDR:          config.BridgeCIDR,
 		HostInterface: config.HostInterface,
 		ManageNAT:     config.ManageNAT,
+		AdoptBridge:   config.AdoptBridge,
 	})
 
 	// Create DHCP manager
@@ -96,13 +105,15 @@ func (nm *NetworkManager) Initialize() error {
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
 
-	// Create and configure bridge
+	// Create and configure bridge. On an adopted bridge this only verifies the
+	// interface exists: the host owns it, so there is nothing to create.
 	if err := nm.bridgeManager.CreateBridge(); err != nil {
 		return fmt.Errorf("failed to create bridge: %w", err)
 	}
 
-	// Start DHCP server if not disabled
-	if !nm.config.DisableDHCP {
+	// Start DHCP server if not disabled. An adopted bridge never gets one: the
+	// host answers DHCP on it and a second server would fight over the socket.
+	if !nm.config.DisableDHCP && !nm.config.AdoptBridge {
 		if err := nm.dhcpManager.Start(); err != nil {
 			return fmt.Errorf("failed to start DHCP server: %w", err)
 		}

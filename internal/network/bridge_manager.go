@@ -16,6 +16,9 @@ type BridgeManager struct {
 	bridgeCIDR    string
 	hostInterface string
 	manageNAT     bool
+	// adoptBridge marks the bridge as host-owned: CreateBridge verifies it
+	// exists instead of creating it, and NAT rules are never written.
+	adoptBridge bool
 }
 
 // BridgeConfig represents bridge configuration
@@ -25,6 +28,7 @@ type BridgeConfig struct {
 	CIDR          string
 	HostInterface string
 	ManageNAT     bool
+	AdoptBridge   bool
 }
 
 // NewBridgeManager creates a new bridge manager
@@ -35,6 +39,7 @@ func NewBridgeManager(config BridgeConfig) *BridgeManager {
 		bridgeCIDR:    config.CIDR,
 		hostInterface: config.HostInterface,
 		manageNAT:     config.ManageNAT,
+		adoptBridge:   config.AdoptBridge,
 	}
 }
 
@@ -43,6 +48,14 @@ func (bm *BridgeManager) CreateBridge() error {
 	// Check if bridge already exists
 	if bm.bridgeExists() {
 		return nil
+	}
+
+	// An adopted bridge is the host's, not ours: creating it would race the
+	// host's own configuration (and could shadow a bridge that carries public
+	// ranges). Refuse instead, so a typo in the bridge name is a startup error
+	// rather than a silently unreachable network.
+	if bm.adoptBridge {
+		return fmt.Errorf("bridge %s does not exist and -bridge-adopt forbids creating it", bm.bridgeName)
 	}
 
 	// Create bridge interface
@@ -78,6 +91,12 @@ func (bm *BridgeManager) CreateBridge() error {
 
 // DeleteBridge removes the bridge and cleans up configuration
 func (bm *BridgeManager) DeleteBridge() error {
+	// An adopted bridge is the host's: deleting it would cut every VM on it off
+	// the network, and the rules on it are the host's to remove.
+	if bm.adoptBridge {
+		return nil
+	}
+
 	// Remove NAT rules if managed
 	if bm.manageNAT {
 		if err := bm.removeNATRules(); err != nil {
