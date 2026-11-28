@@ -13,6 +13,23 @@ are satisfied.
 
 ## What the node looks like today
 
+Measured with the adopter itself, 28 Nov 2026 (`vmlet-adopt scan`, read-only):
+
+| | |
+|---|---|
+| VM datasets found | 84 (1.84 TiB) |
+| Work dirs found | 49, 49/49 configs parse |
+| Unit files found | 1 static (the rest are template instances) |
+| Adoptable VMs | **48** (41 running, 7 failed units) |
+| Already registered | 0 |
+| Skipped unhealthy | 37 (36 zvols with no work dir; 1 config pointing at a vanished device) |
+| Guest IPs resolved | 46/48 from the host neighbour table — all inside 94.182.94.0/24 or 94.182.172.64/26 |
+| Boot-enabled | 0 |
+
+The 48 live VMs run as `firecracker-vm@<id>.service` template instances, which
+report `UnitFileState=disabled` while running, so health is decided by the unit
+being *present*, never by it being enabled.
+
 Measured on node62, November 2026:
 
 | Thing | Value |
@@ -35,14 +52,28 @@ Measured on node62, November 2026:
 Consequences worth internalising before you touch anything:
 
 - **Public IPs are already per-VM on the interface.** Each VM's `fc-*` device is
-  bridged onto `br0`, which carries routable public space. That is the
-  "public IP without OVN" model working today; nothing needs to be built for it.
+  a persistent TAP (`tun type tap … master br0`) bridged onto `br0`, which
+  carries routable public space. That is the "public IP without OVN" model
+  working today; nothing needs to be built for it.
+- **The VM's own systemd unit creates that TAP**, in its ExecStartPre:
+  `ip link show fc-<hex> || (ip tuntap add dev fc-<hex> mode tap && brctl addif br0 fc-<hex>)`.
+  The platform never creates it. Adoption must therefore never re-create a VM's
+  NIC — which is why adopted records carry `NetworkModePreWired`, a mode for
+  which vmlet's network layer is a deliberate no-op.
 - **There is no database to migrate.** The adopter's job is to *create* the
   registry, from the filesystem.
-- **Two firecracker binaries are in play.** Each VM's unit pins one. A blanket
-  upgrade of the binary breaks the VMs on the other one. The adopter records
-  which binary each VM pins; leave them pinned.
+- **Two firecracker binaries are in play.** Each VM's unit pins one, and 9 of the
+  42 running processes do not match their unit's pin (both v1.13.1, so harmless
+  today, but a blanket upgrade would break the ones on the older path). The
+  adopter records the pin; leave them pinned.
 - **Port 8080 is taken.** vmlet must run on another port while haioflash is up.
+- **Deleting an adopted VM reaches the host's disk.** Adopted records point at
+  the host's zvol through the `external_rootfs_path` label (the same label
+  already used for migrated VMs), so `DELETE /vms/{id}` on one would touch a
+  dataset under `default/haioflash-microvms`. Lifecycle control of adopted VMs
+  is deliberately **not** part of this change; decide which dataset owns each
+  zvol before enabling it. Keep the port unreachable from anything but a trusted
+  network: this repo puts no auth on `/admin/*`.
 
 ## Adopting a node
 
@@ -65,9 +96,16 @@ curl -s -X POST http://localhost:8081/admin/adopt/apply | jq
 ```
 
 This writes records into vmlet's own store. Nothing is restarted; the running
-firecracker processes and their `fc-*` devices are untouched. After this, the
-VMs appear in `GET /vms` and can be managed normally (status, resize, delete,
-public-IP add-ons).
+firecracker processes and their `fc-*` devices are untouched. After this, the VMs
+appear in `GET /vms` with their real vcpu, memory, MAC, tap device and guest
+address.
+
+**What you gain is visibility, not control.** Reading is safe. Start, stop,
+resize and delete over an adopted VM are deliberately *not* wired up yet, because
+each of them has an unanswered question about who owns the zvol — `delete` in
+particular would reach `default/haioflash-microvms`, not a vmlet dataset.
+Treat adopted VMs as read-only inventory until that decision is made, and keep
+managing them the way you do today (their own units).
 
 ### 3. Stop haioflash, once you are satisfied
 
@@ -76,7 +114,8 @@ systemctl disable --now haioflash
 ```
 
 Keep the binary and `/opt/haioflash` in place for a while — the root disks and
-configs are the source of truth until vmlet has run a full VM lifecycle on them.
+configs are still the source of truth, since vmlet has not taken over any VM's
+lifecycle yet.
 
 ## vmlet configuration for an adopted host
 
@@ -132,3 +171,74 @@ breakage.
 bridge on the same `10.100.0.0/24`, NAT-mode VMs on the two nodes will collide
 addresses once any cross-node traffic exists. Check node57's bridge ranges
 before enabling NAT mode anywhere, and give each node its own subnet.
+## Implementation: the adopter
+
+The adopter is `internal/adopt` (+ `cmd/vmlet-adopt`, the same thing as a CLI):
+
+| File | What it does |
+|---|---|
+| `internal/adopt/adopt.go` | The read-only command allowlist every shell call goes through, and the size parsing |
+| `internal/adopt/discovery.go` | `Scan`: zfs datasets + work dirs + static unit files → per-VM `Discovery` |
+| `internal/adopt/plan.go` | `Plan`: diff discoveries against the ids vmlet already has → `adopt` / `skip-existing` / `skip-unhealthy` |
+| `internal/adopt/apply.go` | `Apply`: healthy discoveries → `models.MicroVMInstance` records, saved through a `VMStore` |
+| `internal/adopt/adopt_test.go` | Fixture-driven tests, including "Scan never issues a mutating command" |
+| `cmd/http-server/adopt.go` | `POST /admin/adopt/scan`, `POST /admin/adopt/apply`, and the opt-in startup report |
+| `cmd/vmlet-adopt/main.go` | `vmlet-adopt scan|plan|apply` for the same job from a shell |
+
+Knobs (all optional, all off by default):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `-adopt-scan` / `MICROVM_ADOPT_SCAN` | `false` | Startup report only (read-only). Discovery never runs implicitly |
+| `MICROVM_ADOPT_WORK_DIR` | `/opt/haioflash/work/microvms` | Where the per-VM `config.json` files live |
+| `MICROVM_ADOPT_ZFS_DATASET` | `default/haioflash-microvms` | Dataset holding the root disks (a path is resolved by mountpoint) |
+| `MICROVM_ADOPT_UNIT_DIR` | `/etc/systemd/system` | Static unit files |
+| `MICROVM_ADOPT_BRIDGE` | `br0` | Bridge recorded on the adopted records |
+| `MICROVM_ADOPT_RESOLVE_IPS` | `true` | Read the guest IP from the host neighbour table |
+| `MICROVM_ADOPT_CUSTOMER_ID` | `haioflash-adopted` | Customer stamp for records with no billing owner |
+
+Adopted records carry `external_rootfs_path` (the zvol they already run on),
+`Network.AssignmentMethod = macvlan`, the guest MAC, and the existing `fc-<hex>`
+device as `Network.TAPDevice` — so vmlet reuses the disk and the device instead
+of creating either. `auto_start` is **false**: an adopted VM is already running
+its own unit, and vmlet must not decide on its own when it should come back
+after a host reboot. Set it per VM once you have taken the units over.
+
+## Measured on node62 (Nov 2026, after this branch)
+
+```
+$ vmlet-adopt scan
+Read-only scan of /opt/haioflash/work/microvms (dataset default/haioflash-microvms)
+  sources: zfs datasets=84 work dirs=49 unit files=1
+  found 85 VMs; 0 already registered; plan: adopt=48 skip-existing=0 skip-unhealthy=37
+  skip vm-0e7547f1: config.json is missing or unparseable; root disk does not exist
+  ...
+```
+
+| Number | Value |
+|---|---|
+| VM datasets under `default/haioflash-microvms` | 84 volumes (1.84 TiB of root disks) |
+| Per-VM dirs with a `config.json` | 49 — all parse, all have exactly 1 NIC |
+| Static unit files in `/etc/systemd/system` | 1 (`firecracker-vm-46d812e1.service`, enabled, no work dir) |
+| Discoveries / adopt / skip-unhealthy | 85 / 48 / 37 |
+| Adoptable VMs running today | 41 (the other 7 are `failed` units) |
+| Guest IP resolved from the neighbour table | 46 of 48 (the 2 unresolved are stopped VMs) |
+| Pinned firecracker binary | 48/48 pin `/opt/haioflash/bin/firecracker` via `firecracker-vm@<id>.service` |
+| `enabled` units among the adoptable | 0 — none of them are boot-enabled |
+
+The 37 unhealthy ones are almost all leftovers: 36 zvols with no work dir at all
+(deleted by hand, disk still around), plus `vm-VM91247697` whose config points at
+`/dev/zd800p2`, a partition that no longer exists.
+
+Two things a reviewer should know before trusting the output:
+
+1. **The unit's pinned binary is not the binary of the live process.** 9 of the
+   42 running VMs execute `/usr/local/bin/firecracker` while their unit pins
+   `/opt/haioflash/bin/firecracker` (both are v1.13.1). The adopter records the
+   pin; fixing those processes is a separate decision.
+2. **This host no longer matches the units the runbook above describes.** There
+   is one static unit left; the 48 live VMs are template instances
+   (`firecracker-vm@<id>.service`). The adopter handles both shapes, and warns
+   on the static one because vmlet polls `firecracker-vm@<id>.service` for
+   liveness (`firecracker.Manager.IsVMProcessRunning`) — a static unit will read
+   as "stopped" to vmlet while the VM runs.

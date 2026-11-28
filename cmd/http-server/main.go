@@ -912,6 +912,11 @@ func main() {
 		manageNAT      = flag.Bool("manage-nat", getEnvBool("MICROVM_MANAGE_NAT", false), "Manage NAT rules (false if bridge handles it)")
 		bridgeAdopt    = flag.Bool("bridge-adopt", getEnvBool("MICROVM_BRIDGE_ADOPT", false), "Bridge is host-owned: use it as-is, never create, address, DHCP, NAT or delete it")
 		hostsFileDir   = flag.String("hosts-file-dir", getEnvOrDefault("MICROVM_HOSTS_DIR", "/var/snap/lxd/common/lxd/networks/lxdbr0"), "Directory for dnsmasq hosts file")
+
+		// Opt-in, read-only inventory of VMs left behind by the previous
+		// platform (haioflash) on this host. Off by default: discovery must not
+		// run implicitly on every boot.
+		adoptScan = flag.Bool("adopt-scan", getEnvBool("MICROVM_ADOPT_SCAN", false), "At startup, report how many VMs exist on disk (haioflash) vs already registered (read-only)")
 	)
 	flag.Parse()
 
@@ -923,6 +928,7 @@ func main() {
 	fmt.Printf("🌐 Disable DHCP: %v\n", *disableDHCP)
 	fmt.Printf("🌐 Manage NAT: %v\n", *manageNAT)
 	fmt.Printf("🌐 Hosts File Dir: %s\n", *hostsFileDir)
+	fmt.Printf("🧭 Adoption scan at startup: %v (read-only)\n", *adoptScan)
 
 	fmt.Println("📋 Loading configuration...")
 	// Load configuration with fallback to default
@@ -1181,6 +1187,11 @@ func main() {
 	fmt.Println("📋 Loading customer quotas...")
 	server.loadCustomerQuotas()
 
+	// Optional, opt-in: report VMs that exist on disk from the previous platform
+	// (haioflash) against what vmlet already knows. Read-only; nothing is
+	// registered or changed here.
+	server.reportAdoptionStatus()
+
 	// Reconcile VM states — detect stale running VMs from previous session
 	fmt.Println("🔍 Reconciling VM states with actual processes...")
 	server.reconcileVMStates()
@@ -1390,6 +1401,12 @@ func main() {
 	router.HandleFunc("/admin/orphaned-units", server.listOrphanedUnitsHandler).Methods("GET")
 	router.HandleFunc("/admin/quotas/{customer}", server.getQuotaHandler).Methods("GET")
 	router.HandleFunc("/admin/quotas/{customer}", server.setQuotaHandler).Methods("PUT")
+
+	// Adoption of VMs left behind by the previous platform (haioflash).
+	// Both endpoints are read-only towards the VMs: scan reports the plan,
+	// apply only writes records into vmlet's store.
+	router.HandleFunc("/admin/adopt/scan", server.adoptScanHandler).Methods("POST")
+	router.HandleFunc("/admin/adopt/apply", server.adoptApplyHandler).Methods("POST")
 
 	// Prometheus metrics (dependency-free exposition)
 	metrics.RegisterAll()
@@ -5739,6 +5756,15 @@ func (s *HTTPServer) refreshTAPDeviceInfo(vmID string) string {
 		}
 	}
 	s.cacheMutex.RUnlock()
+
+	// Prefer the device the record already names, when that device exists. An
+	// adopted VM (internal/adopt) runs on an fc-<hex> device the host bridge
+	// already carries, and the discovery below would invent a tap name that
+	// exists nowhere instead.
+	if vm, exists := s.getVM(vmID); exists && vm.Network.TAPDevice != "" && s.verifyTAPDeviceExists(vm.Network.TAPDevice) {
+		s.cacheTAPDevice(vmID, vm.Network.TAPDevice)
+		return vm.Network.TAPDevice
+	}
 
 	// Cache miss or expired, refresh the information
 	tapName := s.getTAPDeviceName(vmID)

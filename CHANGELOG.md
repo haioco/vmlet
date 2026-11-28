@@ -286,3 +286,17 @@ First public open-source release.
 
 [Unreleased]: https://github.com/haioco/vmlet/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/haioco/vmlet/releases/tag/v0.1.0
+- Adopt VMs left behind by the previous platform (haioflash) without touching
+  them: `POST /admin/adopt/scan` reports the read-only plan, `POST
+  /admin/adopt/apply` records what it finds into vmlet's own store. Discovery
+  merges three sources — the ZFS dataset list, the per-VM work dirs and their
+  `config.json`, and the systemd units — and never aborts on a broken one. Every
+  shell command the adopter runs goes through a closed read-only allowlist
+  (`zfs list`, `systemctl show`/`is-active`/`is-enabled`, `ip link`/`neigh show`)
+  and anything else fails closed, so adoption cannot start, stop or rewrite a VM,
+  and cannot create or delete an `fc-*` device.
+- New `prewired` network mode: on an adopted host the VM's own systemd unit
+  creates its TAP in ExecStartPre (`ip tuntap add dev fc-<hex> mode tap &&
+  brctl addif <bridge> fc-<hex>`), so vmlet's network layer is a deliberate no-op
+  for those VMs — ConfigureNetwork refuses, CleanupNetwork does nothing, and the
+  config generator uses the recorded device instead of inventing a name.

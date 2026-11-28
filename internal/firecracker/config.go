@@ -149,6 +149,10 @@ func (cg *ConfigGenerator) generateBootArgs(microvm *models.MicroVMInstance, pri
 		baseArgs += fmt.Sprintf(" ip=%s:::255.255.255.0::eth0:off", microvm.Network.IPAddress)
 	case models.NetworkModeOVN:
 		baseArgs += " ip=dhcp" // OVN typically uses DHCP
+	case models.NetworkModePreWired:
+		// No ip= at all: a pre-wired guest brings its own configuration (on an
+		// adopted host, cloud-init NoCloud with the public address). Injecting an
+		// ip= here would pin it to an address the host's bridge does not route.
 	}
 
 	// Add cloud-init datasource for NoCloud seeded files
@@ -209,6 +213,14 @@ func (cg *ConfigGenerator) generateNetworkInterfaces(microvm *models.MicroVMInst
 		} else {
 			hostDevName = fmt.Sprintf("mv-%s", microvm.ID[:12]) // fallback with correct prefix and length
 		}
+	case models.NetworkModePreWired:
+		// The device already exists and the guest is using it. There is no safe
+		// fallback name: inventing one would attach firecracker to a device the
+		// guest never sees.
+		if microvm.Network.TAPDevice == "" {
+			return nil, fmt.Errorf("network: pre-wired vm %s has no recorded TAP device", microvm.ID)
+		}
+		hostDevName = microvm.Network.TAPDevice
 	default:
 		return nil, fmt.Errorf("unsupported network mode: %s", microvm.Network.AssignmentMethod)
 	}

@@ -80,6 +80,11 @@ func (nm *NetworkManager) ConfigureNetwork(ctx context.Context, microvmID string
 		return nm.configureIPv6OnlyNetwork(ctx, microvmID, customMAC, bandwidthIngress, bandwidthEgress, customIPv6, customIPv6Gateway, customIPv6Prefix)
 	case models.NetworkModeOVN:
 		return nm.configureOVNNetwork(ctx, microvmID, networkID)
+	case models.NetworkModePreWired:
+		// The VM's own unit owns its TAP and its bridge membership. Configuring
+		// it here would create a second device under a name the guest is not
+		// using, so refuse instead of guessing.
+		return nil, fmt.Errorf("network: vm %s is pre-wired; its interface is managed by its unit, not by vmlet", microvmID)
 	default:
 		return nil, fmt.Errorf("unsupported network mode: %s", mode)
 	}
@@ -705,6 +710,10 @@ func (nm *NetworkManager) configureOVNNetwork(ctx context.Context, microvmID, ne
 // CleanupNetwork cleans up network resources for a microVM
 func (nm *NetworkManager) CleanupNetwork(ctx context.Context, microvmID string, mode models.NetworkMode) error {
 	switch mode {
+	case models.NetworkModePreWired:
+		// Nothing to undo: the TAP and its bridge membership are the host's, and
+		// the bridge cases below would delete a device that is still in use.
+		return nil
 	case models.NetworkModeNAT:
 		tapName := ovnTAPName(microvmID)
 		macAddr := nm.generateMACAddress(microvmID)

@@ -34,6 +34,15 @@ const (
 	NetworkModeNAT      NetworkMode = "nat"
 	NetworkModeOVN      NetworkMode = "ovn"
 	NetworkModeIPv6Only NetworkMode = "ipv6-only" // IPv6 public + IPv4 private (NAT for IPv4-only sites)
+	// NetworkModePreWired means the VM's interface is wired by something vmlet
+	// does not own — on an adopted haioflash host, the VM's own systemd unit runs
+	// `ip tuntap add dev fc-<hex> mode tap && brctl addif <bridge> fc-<hex>` in
+	// its ExecStartPre. vmlet must neither configure nor tear that device down:
+	// re-creating it would shadow the one the guest is already using, and
+	// deleting it would cut the VM off. This is deliberately outside the set
+	// CreateMicroVM dispatches to ConfigureNetwork, so a pre-wired VM is a
+	// no-op for vmlet's networking layer.
+	NetworkModePreWired NetworkMode = "prewired"
 )
 
 // ResourceSpecs defines the resource requirements for a microVM
