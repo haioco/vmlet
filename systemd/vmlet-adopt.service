@@ -1,0 +1,66 @@
+# vmlet on a host adopted from haioflash.
+#
+# Differences from a green-field vmlet install:
+#
+#   - the bridge is the host's, so vmlet only verifies it (adopt=true). Writing
+#     NAT rules or a DHCP server onto it would hijack a bridge carrying real
+#     public ranges; deleting it on shutdown would cut every VM off.
+#   - a different port, because haioflash's http-server still owns 8080 until
+#     it is stopped.
+#   - no OVN on a host that has not installed it yet: the overlay is probed at
+#     startup and degrades to bridge-only, so leaving these unset is safe.
+#
+# Installation:
+#   sudo install -m755 vmlet-http /usr/local/bin/vmlet-http
+#   sudo cp systemd/vmlet-adopt.service /etc/systemd/system/vmlet.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vmlet
+#
+# Adopt the existing VMs (read-only scan, then apply):
+#   curl -s -X POST localhost:8081/admin/adopt/scan | jq
+#   curl -s -X POST localhost:8081/admin/adopt/apply | jq
+
+[Unit]
+Description=vmlet MicroVM Platform (adopted host)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+Environment=MICROVM_WORK_DIR=/opt/vmlet/data
+Environment=MICROVM_KERNEL_PATH=/opt/haioflash/kernels/vmlinux
+
+# Host-owned bridge carrying public ranges: verify, never manage.
+Environment=MICROVM_BRIDGE_ADOPT=true
+Environment=MICROVM_NETWORK_BRIDGE=br0
+Environment=MICROVM_MANAGE_NAT=false
+
+# haioflash's http-server holds 8080 until it is stopped.
+Environment=PORT=8081
+
+# Overlay, only once openvswitch-switch + ovn-* are installed. The subnet must
+# not overlap the host's public ranges.
+Environment=MICROVM_NETWORK_BACKEND=bridge
+#Environment=MICROVM_OVN_NETWORK_CIDR=10.250.0.0/24
+#Environment=MICROVM_OVN_NETWORK_IP=10.250.0.1
+
+ExecStart=/usr/local/bin/vmlet-http
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=mixed
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vmlet
+
+# vmlet needs root for /dev/kvm, zvols and the OVN sockets; there is no
+# openvswitch group on Debian/Ubuntu packaging, so there is nothing to drop to.
+NoNewPrivileges=false
+ProtectHome=false
+ProtectSystem=false
+PrivateTmp=false
+
+[Install]
+WantedBy=multi-user.target
